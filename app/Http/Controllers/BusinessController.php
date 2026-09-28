@@ -31,6 +31,7 @@ class BusinessController extends Controller
             'bio' => 'nullable|string',
             'category_id' => 'nullable|exists:categories,id',
             'password' => 'required|string|min:6',
+            'role' => 'required|string|in:admin,subadmin,vendor,business',
         ]);
 
         // Generate a unique business ID
@@ -49,7 +50,7 @@ class BusinessController extends Controller
             'bio' => $validated['bio'],
             'category_id' => $validated['category_id'] ?? null,
             'password' => Hash::make($validated['password']),
-            'role' => 'business',
+            'role' => $validated['role'],
         ]);
 
         return response()->json(['status' => true, 'data' => $business]);
@@ -65,6 +66,7 @@ class BusinessController extends Controller
             'phone' => 'required|string|unique:users,phone,'.$id,
             'bio' => 'nullable|string',
             'category_id' => 'nullable|exists:categories,id',
+            'role' => 'nullable|string|in:admin,subadmin,vendor,business',
         ]);
 
         $business->update([
@@ -73,7 +75,21 @@ class BusinessController extends Controller
             'phone' => $validated['phone'],
             'bio' => $validated['bio'] ?? null,
             'category_id' => $validated['category_id'] ?? $business->category_id,
+            'role' => $validated['role'] ?? $business->role,
         ]);
+
+        return response()->json(['status' => true, 'data' => $business]);
+    }
+
+    public function checkBusiness(Request $request)
+    {
+        $request->validate(['business_id' => 'required|string']);
+        
+        $business = User::where('role', 'business')->where('business_id', $request->business_id)->first();
+        
+        if (!$business) {
+            return response()->json(['status' => false, 'message' => 'Business not found.']);
+        }
 
         return response()->json(['status' => true, 'data' => $business]);
     }

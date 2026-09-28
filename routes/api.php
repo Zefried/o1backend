@@ -25,6 +25,8 @@ Route::post('/logout', [AuthController::class, 'logout'])
     ->middleware('auth:sanctum');
 
 
+Route::post('/public/chat', [ChatController::class, 'publicChat']);
+
 Route::prefix('admin')
     ->middleware(['auth:sanctum', CheckAdmin::class])
     ->group(function () {
@@ -39,6 +41,7 @@ Route::prefix('admin')
         Route::post('/businesses', [\App\Http\Controllers\BusinessController::class, 'store']);
         Route::put('/businesses/{id}', [\App\Http\Controllers\BusinessController::class, 'update']);
         Route::delete('/businesses/{id}', [\App\Http\Controllers\BusinessController::class, 'destroy']);
+        Route::post('/businesses/check', [\App\Http\Controllers\BusinessController::class, 'checkBusiness']);
 
         // ── Category routes ───────────────────────
         Route::get('/categories/flat', [CategoryController::class, 'flatList']);

@@ -32,4 +32,29 @@ class ChatController extends Controller
 
         return response()->json($result, $result['code'] ?? 200);
     }
+
+    /** POST /api/public/chat */
+    public function publicChat(Request $request)
+    {
+        $request->validate([
+            'message'     => 'required|string',
+            'chat'        => 'nullable|array',
+            'business_id' => 'required|string',
+        ]);
+
+        $message = $request->input('message');
+        $chat = $request->input('chat', []);
+        $businessId = $request->input('business_id');
+
+        $business = \App\Models\User::where('role', 'business')->where('business_id', $businessId)->first();
+        $businessBio = $business ? $business->bio : 'our services';
+
+        $context = [
+            'businessBio' => $businessBio
+        ];
+
+        $result = $this->chatEngine->handle($message, $chat, $context);
+
+        return response()->json($result, $result['code'] ?? 200);
+    }
 }
