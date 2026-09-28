@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\AdminUserController;
 use App\Http\Controllers\Admin\AttributeController;
 use App\Http\Controllers\Admin\AiContextController;
+use App\Http\Controllers\Admin\CampaignInformationController;
 use App\Http\Controllers\Admin\ChatController;
 use App\Http\Controllers\Admin\AttributeFieldController;
 use App\Http\Controllers\Admin\CategoryController;
@@ -77,6 +78,12 @@ Route::prefix('admin')
         Route::post('/ai-contexts', [AiContextController::class, 'store']);
         Route::put('/ai-contexts/{id}', [AiContextController::class, 'update']);
         Route::delete('/ai-contexts/{id}', [AiContextController::class, 'destroy']);
+
+        // ── Campaign routes ───────────────────────
+        Route::get('/campaigns', [CampaignInformationController::class, 'index']);
+        Route::post('/campaigns', [CampaignInformationController::class, 'store']);
+        Route::put('/campaigns/{id}', [CampaignInformationController::class, 'update']);
+        Route::delete('/campaigns/{id}', [CampaignInformationController::class, 'destroy']);
 
         // ── Chat routes ───────────────────────────
         Route::post('/chat', [ChatController::class, 'handleChat']);
