@@ -44,6 +44,12 @@ class ServiceService
                 return ['status' => false, 'message' => $validator->errors()->first(), 'code' => 422];
             }
 
+            $categoryId = $data['category_id'] ?? null;
+
+            if (Service::where('name', trim($data['name']))->where('category_id', $categoryId)->exists()) {
+                return ['status' => false, 'message' => 'Service already exists in this category.', 'code' => 409];
+            }
+
             $slug = $this->uniqueSlug(Str::slug($data['name']));
 
             $service = Service::create([
@@ -58,6 +64,58 @@ class ServiceService
                 'status'  => true,
                 'message' => 'Service created successfully',
                 'data'    => $service->load('category:id,name'),
+                'code'    => 201,
+            ];
+        } catch (\Exception $e) {
+            return ['status' => false, 'message' => $e->getMessage(), 'code' => 500];
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // POST: Create multiple services in bulk
+    // ─────────────────────────────────────────
+    public function bulkStore(array $data): array
+    {
+        try {
+            $validator = Validator::make($data, [
+                'services'    => 'required|string',
+                'category_id' => 'required|integer|exists:categories,id',
+            ]);
+
+            if ($validator->fails()) {
+                return ['status' => false, 'message' => $validator->errors()->first(), 'code' => 422];
+            }
+
+            $serviceNames = preg_split('/[\n,]+/', $data['services']);
+            $serviceNames = array_map('trim', $serviceNames);
+            $serviceNames = array_filter($serviceNames);
+            $serviceNames = array_unique($serviceNames);
+
+            if (empty($serviceNames)) {
+                return ['status' => false, 'message' => 'No valid services provided.', 'code' => 422];
+            }
+
+            $createdCount = 0;
+
+            foreach ($serviceNames as $name) {
+                // Skip if service already exists with same name and category
+                if (Service::where('name', $name)->where('category_id', $data['category_id'])->exists()) {
+                    continue;
+                }
+
+                $slug = $this->uniqueSlug(Str::slug($name));
+                Service::create([
+                    'name'        => $name,
+                    'slug'        => $slug,
+                    'category_id' => $data['category_id'],
+                    'status'      => 'active',
+                ]);
+                $createdCount++;
+            }
+
+            return [
+                'status'  => true,
+                'message' => $createdCount . ' services created successfully',
                 'code'    => 201,
             ];
         } catch (\Exception $e) {

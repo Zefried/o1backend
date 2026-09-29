@@ -88,3 +88,12 @@ Route::prefix('admin')
         // ── Chat routes ───────────────────────────
         Route::post('/chat', [ChatController::class, 'handleChat']);
     });
+
+// ── Bulk API Routes ───────────────────────────
+Route::prefix('admin')
+    ->middleware(['auth:sanctum', CheckAdmin::class])
+    ->group(function () {
+        // All bulk upload api routes should be here
+        Route::post('/services/bulk', [ServiceController::class, 'bulkStore']);
+        Route::post('/attributes/bulk', [AttributeController::class, 'bulkStore']);
+    });

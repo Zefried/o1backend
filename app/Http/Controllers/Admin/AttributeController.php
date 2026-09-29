@@ -29,6 +29,13 @@ class AttributeController extends Controller
         return response()->json($result, $result['code']);
     }
 
+    /** POST /api/admin/attributes/bulk */
+    public function bulkStore(Request $request)
+    {
+        $result = $this->service->bulkStore($request->all());
+        return response()->json($result, $result['code']);
+    }
+
     /** PUT /api/admin/attributes/{id} */
     public function update(Request $request, int $id)
     {

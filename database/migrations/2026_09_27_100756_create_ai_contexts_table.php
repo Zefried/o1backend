@@ -10,9 +10,9 @@ return new class extends Migration
     {
         Schema::create('ai_contexts', function (Blueprint $table) {
             $table->id();
-            $table->string('business_id');
-            $table->string('service_name');
-            $table->string('attribute_definition');
+            $table->string('business_id')->index();
+            $table->string('service_name')->index();
+            $table->string('attribute_definition')->index();
             $table->text('context');
             $table->text('prompt');
             $table->timestamps();

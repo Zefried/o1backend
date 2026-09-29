@@ -36,6 +36,16 @@ class ServiceController extends Controller
     }
 
     /**
+     * POST /api/admin/services/bulk
+     * Create multiple services.
+     */
+    public function bulkStore(Request $request)
+    {
+        $result = $this->serviceService->bulkStore($request->all());
+        return response()->json($result, $result['code']);
+    }
+
+    /**
      * PUT /api/admin/services/{id}
      * Update an existing service.
      */

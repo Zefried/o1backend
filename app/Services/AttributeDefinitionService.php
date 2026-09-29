@@ -40,12 +40,18 @@ class AttributeDefinitionService
                 return ['status' => false, 'message' => $validator->errors()->first(), 'code' => 422];
             }
 
+            $categoryId = $data['category_id'] ?? null;
+
+            if (AttributeDefinition::where('name', trim($data['name']))->where('category_id', $categoryId)->exists()) {
+                return ['status' => false, 'message' => 'Attribute already exists in this category.', 'code' => 409];
+            }
+
             $slug = $this->uniqueSlug(Str::slug($data['name']));
 
             $attribute = AttributeDefinition::create([
                 'name'        => trim($data['name']),
                 'slug'        => $slug,
-                'category_id' => $data['category_id'] ?? null,
+                'category_id' => $categoryId,
                 'description' => $data['description'] ?? null,
                 'status'      => 'active',
             ]);
@@ -54,6 +60,60 @@ class AttributeDefinitionService
                 'status'  => true,
                 'message' => 'Attribute created successfully',
                 'data'    => $attribute->load('category:id,name'),
+                'code'    => 201,
+            ];
+        } catch (\Exception $e) {
+            return ['status' => false, 'message' => $e->getMessage(), 'code' => 500];
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // POST: Bulk Create
+    // ─────────────────────────────────────────
+    public function bulkStore(array $data): array
+    {
+        try {
+            $validator = Validator::make($data, [
+                'attributes'  => 'required|string',
+                'category_id' => 'required|integer|exists:categories,id',
+            ]);
+
+            if ($validator->fails()) {
+                return ['status' => false, 'message' => $validator->errors()->first(), 'code' => 422];
+            }
+
+            $attributeNames = array_map('trim', preg_split('/[\n,]+/', $data['attributes']));
+            $attributeNames = array_filter($attributeNames);
+            $attributeNames = array_unique($attributeNames);
+
+            if (empty($attributeNames)) {
+                return ['status' => false, 'message' => 'No valid attributes provided.', 'code' => 422];
+            }
+
+            $createdCount = 0;
+            foreach ($attributeNames as $name) {
+                // Skip if attribute already exists with same name and category
+                if (AttributeDefinition::where('name', $name)->where('category_id', $data['category_id'])->exists()) {
+                    continue;
+                }
+
+                $slug = $this->uniqueSlug(Str::slug($name));
+                AttributeDefinition::create([
+                    'name'        => $name,
+                    'slug'        => $slug,
+                    'category_id' => $data['category_id'],
+                    'status'      => 'active',
+                ]);
+                $createdCount++;
+            }
+
+            $message = $createdCount > 0 
+                ? "Successfully created {$createdCount} attribute(s)." 
+                : "No new attributes created (duplicates skipped).";
+
+            return [
+                'status'  => true,
+                'message' => $message,
                 'code'    => 201,
             ];
         } catch (\Exception $e) {
