@@ -11,6 +11,7 @@ class Service extends Model
     use HasFactory;
 
     protected $fillable = [
+        'business_id',
         'name',
         'slug',
         'category_id',

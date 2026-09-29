@@ -56,4 +56,16 @@ class AttributeController extends Controller
         $result = $this->service->destroy($id);
         return response()->json($result, $result['code']);
     }
+
+    /** DELETE /api/admin/attributes/bulk */
+    public function bulkDestroy(Request $request)
+    {
+        $request->validate([
+            'ids'   => 'required|array',
+            'ids.*' => 'integer|exists:attribute_definitions,id',
+        ]);
+
+        $result = $this->service->bulkDestroy($request->input('ids'));
+        return response()->json($result, $result['code']);
+    }
 }

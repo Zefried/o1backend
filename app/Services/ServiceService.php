@@ -11,12 +11,16 @@ class ServiceService
     // ─────────────────────────────────────────
     // GET: All services (with category)
     // ─────────────────────────────────────────
-    public function index(): array
+    public function index(array $filters = []): array
     {
         try {
-            $services = Service::with('category:id,name')
-                ->orderBy('name')
-                ->get();
+            $query = Service::with('category:id,name')->orderBy('name');
+
+            if (!empty($filters['business_id'])) {
+                $query->where('business_id', $filters['business_id']);
+            }
+
+            $services = $query->get();
 
             return [
                 'status' => true,
@@ -38,6 +42,7 @@ class ServiceService
                 'name'        => 'required|string|max:255',
                 'category_id' => 'nullable|integer|exists:categories,id',
                 'description' => 'nullable|string',
+                'business_id' => 'required|string',
             ]);
 
             if ($validator->fails()) {
@@ -45,9 +50,10 @@ class ServiceService
             }
 
             $categoryId = $data['category_id'] ?? null;
+            $businessId = $data['business_id'];
 
-            if (Service::where('name', trim($data['name']))->where('category_id', $categoryId)->exists()) {
-                return ['status' => false, 'message' => 'Service already exists in this category.', 'code' => 409];
+            if (Service::where('name', trim($data['name']))->where('category_id', $categoryId)->where('business_id', $businessId)->exists()) {
+                return ['status' => false, 'message' => 'Service already exists in this category for this business.', 'code' => 409];
             }
 
             $slug = $this->uniqueSlug(Str::slug($data['name']));
@@ -55,7 +61,8 @@ class ServiceService
             $service = Service::create([
                 'name'        => trim($data['name']),
                 'slug'        => $slug,
-                'category_id' => $data['category_id'] ?? null,
+                'category_id' => $categoryId,
+                'business_id' => $businessId,
                 'description' => $data['description'] ?? null,
                 'status'      => 'active',
             ]);
@@ -80,6 +87,7 @@ class ServiceService
             $validator = Validator::make($data, [
                 'services'    => 'required|string',
                 'category_id' => 'required|integer|exists:categories,id',
+                'business_id' => 'required|string',
             ]);
 
             if ($validator->fails()) {
@@ -99,7 +107,7 @@ class ServiceService
 
             foreach ($serviceNames as $name) {
                 // Skip if service already exists with same name and category
-                if (Service::where('name', $name)->where('category_id', $data['category_id'])->exists()) {
+                if (Service::where('name', $name)->where('category_id', $data['category_id'])->where('business_id', $data['business_id'])->exists()) {
                     continue;
                 }
 
@@ -108,6 +116,7 @@ class ServiceService
                     'name'        => $name,
                     'slug'        => $slug,
                     'category_id' => $data['category_id'],
+                    'business_id' => $data['business_id'],
                     'status'      => 'active',
                 ]);
                 $createdCount++;
@@ -205,6 +214,28 @@ class ServiceService
             return [
                 'status'  => true,
                 'message' => 'Service deleted successfully',
+                'code'    => 200,
+            ];
+        } catch (\Exception $e) {
+            return ['status' => false, 'message' => $e->getMessage(), 'code' => 500];
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // DELETE: Remove multiple services
+    // ─────────────────────────────────────────
+    public function bulkDestroy(array $ids): array
+    {
+        try {
+            if (empty($ids)) {
+                return ['status' => false, 'message' => 'No services provided for deletion.', 'code' => 422];
+            }
+
+            $deletedCount = Service::whereIn('id', $ids)->delete();
+
+            return [
+                'status'  => true,
+                'message' => "{$deletedCount} services deleted successfully.",
                 'code'    => 200,
             ];
         } catch (\Exception $e) {

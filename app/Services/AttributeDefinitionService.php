@@ -34,6 +34,7 @@ class AttributeDefinitionService
                 'name'        => 'required|string|max:255',
                 'category_id' => 'nullable|integer|exists:categories,id',
                 'description' => 'nullable|string',
+                'business_id' => 'required|string',
             ]);
 
             if ($validator->fails()) {
@@ -41,9 +42,10 @@ class AttributeDefinitionService
             }
 
             $categoryId = $data['category_id'] ?? null;
+            $businessId = $data['business_id'];
 
-            if (AttributeDefinition::where('name', trim($data['name']))->where('category_id', $categoryId)->exists()) {
-                return ['status' => false, 'message' => 'Attribute already exists in this category.', 'code' => 409];
+            if (AttributeDefinition::where('name', trim($data['name']))->where('category_id', $categoryId)->where('business_id', $businessId)->exists()) {
+                return ['status' => false, 'message' => 'Attribute already exists in this category for this business.', 'code' => 409];
             }
 
             $slug = $this->uniqueSlug(Str::slug($data['name']));
@@ -52,6 +54,7 @@ class AttributeDefinitionService
                 'name'        => trim($data['name']),
                 'slug'        => $slug,
                 'category_id' => $categoryId,
+                'business_id' => $businessId,
                 'description' => $data['description'] ?? null,
                 'status'      => 'active',
             ]);
@@ -76,6 +79,7 @@ class AttributeDefinitionService
             $validator = Validator::make($data, [
                 'attributes'  => 'required|string',
                 'category_id' => 'required|integer|exists:categories,id',
+                'business_id' => 'required|string',
             ]);
 
             if ($validator->fails()) {
@@ -93,7 +97,7 @@ class AttributeDefinitionService
             $createdCount = 0;
             foreach ($attributeNames as $name) {
                 // Skip if attribute already exists with same name and category
-                if (AttributeDefinition::where('name', $name)->where('category_id', $data['category_id'])->exists()) {
+                if (AttributeDefinition::where('name', $name)->where('category_id', $data['category_id'])->where('business_id', $data['business_id'])->exists()) {
                     continue;
                 }
 
@@ -102,6 +106,7 @@ class AttributeDefinitionService
                     'name'        => $name,
                     'slug'        => $slug,
                     'category_id' => $data['category_id'],
+                    'business_id' => $data['business_id'],
                     'status'      => 'active',
                 ]);
                 $createdCount++;
@@ -201,6 +206,28 @@ class AttributeDefinitionService
             $attribute->delete();
 
             return ['status' => true, 'message' => 'Attribute deleted successfully', 'code' => 200];
+        } catch (\Exception $e) {
+            return ['status' => false, 'message' => $e->getMessage(), 'code' => 500];
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // DELETE: Remove multiple attributes
+    // ─────────────────────────────────────────
+    public function bulkDestroy(array $ids): array
+    {
+        try {
+            if (empty($ids)) {
+                return ['status' => false, 'message' => 'No attributes provided for deletion.', 'code' => 422];
+            }
+
+            $deletedCount = AttributeDefinition::whereIn('id', $ids)->delete();
+
+            return [
+                'status'  => true,
+                'message' => "{$deletedCount} attributes deleted successfully.",
+                'code'    => 200,
+            ];
         } catch (\Exception $e) {
             return ['status' => false, 'message' => $e->getMessage(), 'code' => 500];
         }

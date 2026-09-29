@@ -46,11 +46,8 @@ class ChatController extends Controller
         $chat = $request->input('chat', []);
         $businessId = $request->input('business_id');
 
-        $business = \App\Models\User::where('role', 'business')->where('business_id', $businessId)->first();
-        $businessBio = $business ? $business->bio : 'our services';
-
         $context = [
-            'businessBio' => $businessBio
+            'business_id' => $businessId
         ];
 
         $result = $this->chatEngine->handle($message, $chat, $context);

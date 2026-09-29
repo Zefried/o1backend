@@ -19,9 +19,9 @@ class ServiceController extends Controller
      * GET /api/admin/services
      * Returns all services with their category.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $result = $this->serviceService->index();
+        $result = $this->serviceService->index($request->all());
         return response()->json($result, $result['code']);
     }
 
@@ -72,6 +72,21 @@ class ServiceController extends Controller
     public function destroy(int $id)
     {
         $result = $this->serviceService->destroy($id);
+        return response()->json($result, $result['code']);
+    }
+
+    /**
+     * DELETE /api/admin/services/bulk
+     * Delete multiple services.
+     */
+    public function bulkDestroy(Request $request)
+    {
+        $request->validate([
+            'ids'   => 'required|array',
+            'ids.*' => 'integer|exists:services,id',
+        ]);
+
+        $result = $this->serviceService->bulkDestroy($request->input('ids'));
         return response()->json($result, $result['code']);
     }
 }

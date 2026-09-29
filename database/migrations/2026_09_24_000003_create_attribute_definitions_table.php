@@ -10,6 +10,7 @@ return new class extends Migration
     {
         Schema::create('attribute_definitions', function (Blueprint $table) {
             $table->id();
+            $table->string('business_id')->index();
             $table->string('name');
             $table->string('slug')->unique();
             $table->unsignedBigInteger('category_id')->nullable();

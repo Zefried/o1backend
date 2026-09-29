@@ -16,8 +16,8 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // 1. Create a Default User
-        User::factory()->create([
+        // 1. Create the Admin User
+        $adminUser = User::factory()->create([
             'name' => 'Admin User',
             'email' => 'zeffali7@gmail.com',
             'role' => 'admin',
@@ -27,7 +27,17 @@ class DatabaseSeeder extends Seeder
         $interiorCategory = Category::create([
             'name' => 'Interior',
             'slug' => 'interior',
-            // Default fields like status etc. if any are required
+        ]);
+
+        // 3. Create the Business User (Abc interior)
+        $businessUser = User::factory()->create([
+            'name' => 'Abc interior',
+            'email' => 'test@123',
+            'phone' => '9966554485',
+            'role' => 'business',
+            'business_id' => 'BUS-QVTE1BKU',
+            'category_id' => $interiorCategory->id,
+            'bio' => 'interior design, we deal in all kind of interior design work',
         ]);
 
         // 3. Automatically Seed Core Services
@@ -67,6 +77,7 @@ class DatabaseSeeder extends Seeder
                 'name'        => $serviceName,
                 'slug'        => Str::slug($serviceName),
                 'category_id' => $interiorCategory->id,
+                'business_id' => $businessUser->business_id,
                 'status'      => 'active',
             ]);
         }
@@ -87,6 +98,7 @@ class DatabaseSeeder extends Seeder
                 'name'        => $attrName,
                 'slug'        => Str::slug($attrName),
                 'category_id' => $interiorCategory->id,
+                'business_id' => $businessUser->business_id,
                 'status'      => 'active',
             ]);
         }

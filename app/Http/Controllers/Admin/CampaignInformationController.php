@@ -18,7 +18,7 @@ class CampaignInformationController extends Controller
             $query->where('business_id', trim($request->business_id));
         }
 
-        $campaigns = $query->latest()->get();
+        $campaigns = $query->with('service')->latest()->get();
 
         return response()->json(['status' => true, 'message' => 'Campaigns fetched', 'data' => $campaigns, 'code' => 200], 200);
     }
@@ -32,6 +32,7 @@ class CampaignInformationController extends Controller
             'gender' => 'required|string|in:both,male,female',
             'locations' => 'required|string',
             'campaign_link' => 'required|string|unique:campaign_information,campaign_link',
+            'service_id' => 'nullable|integer|exists:services,id',
         ]);
 
         if ($validator->fails()) {
@@ -40,6 +41,7 @@ class CampaignInformationController extends Controller
 
         $record = CampaignInformation::create([
             'business_id' => trim($request->business_id),
+            'service_id' => $request->service_id ? (int) $request->service_id : null,
             'campaign_name' => trim($request->campaign_name),
             'gender' => trim($request->gender),
             'locations' => trim($request->locations),
@@ -62,6 +64,7 @@ class CampaignInformationController extends Controller
             'campaign_name' => 'required|string|max:255',
             'gender' => 'required|string|in:both,male,female',
             'locations' => 'required|string',
+            'service_id' => 'nullable|integer|exists:services,id',
         ]);
 
         if ($validator->fails()) {
@@ -72,6 +75,7 @@ class CampaignInformationController extends Controller
             'campaign_name' => trim($request->campaign_name),
             'gender' => trim($request->gender),
             'locations' => trim($request->locations),
+            'service_id' => $request->service_id ? (int) $request->service_id : null,
         ]);
 
         return response()->json(['status' => true, 'message' => 'Campaign updated successfully', 'data' => $record, 'code' => 200], 200);

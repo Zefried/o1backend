@@ -13,9 +13,15 @@ class CampaignInformation extends Model
 
     protected $fillable = [
         'business_id',
+        'service_id',
         'campaign_name',
         'gender',
         'locations',
         'campaign_link',
     ];
+
+    public function service()
+    {
+        return $this->belongsTo(Service::class, 'service_id');
+    }
 }

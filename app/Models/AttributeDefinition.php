@@ -13,6 +13,7 @@ class AttributeDefinition extends Model
     protected $table = 'attribute_definitions';
 
     protected $fillable = [
+        'business_id',
         'name',
         'slug',
         'category_id',
