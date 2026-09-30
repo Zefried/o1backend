@@ -26,11 +26,11 @@ trait ChatMethodHandler
         Determine the primary intent of the latest message. 
         Return ONLY valid JSON with EXACTLY ONE of these keys set to true:
         - "abusiveOrStupid": (boolean) User is being abusive, using profanity, or typing complete nonsense gibberish.
-        - "casualChat": (boolean) User is greeting (hello, hi), saying thanks, asking "how are you", or talking about things unrelated to the business services.
+        - "casualChat": (boolean) User is greeting (hello, hi), saying thanks, asking "how are you". STRICT RULE: DO NOT set to true for short follow-up questions like "kya?", "kaise?", "matlab?", these should be userRequestInfo.
         - "userRequestInfo": (boolean) User is asking a question, making a request, or requesting information related to the business's niche, services, or attributes.
 
-        - "topicChange": (boolean) STRICT RULE: ONLY set to true if the user's LATEST message EXPLICITLY names a DIFFERENT service from the Current Active Service. If they don't explicitly ask for a new service, it MUST be false.
-        - "newServiceDemand": (string or null) If topicChange is true, extract the exact name of the NEW service. Otherwise, set to null.
+        - "topicChange": (boolean) STRICT RULE: Set to true if the user's LATEST message names or implies a DIFFERENT service from the Current Active Service (e.g., if active is "Modular Kitchen" and they ask about "False Ceiling", this is true).
+        - "newServiceDemand": (string or null) If topicChange is true, extract the exact name of the NEW service from the Available Services in Business Context. Otherwise, set to null.
 
         JSON:
         {
@@ -42,7 +42,9 @@ trait ChatMethodHandler
         }
         PROMPT;
 
-        return $this->callLLM($prompt, $message, $chat, true, 0.1, 256);
+        $intentJson = $this->callLLM($prompt, $message, $chat, true, 0.1, 256);
+        \Log::info("checkIntent Output: ", $intentJson);
+        return $intentJson;
     }
 
     public function handleWelcome()
@@ -118,27 +120,44 @@ trait ChatMethodHandler
             ];
         }
 
-        $payload = [
-            'model' => 'openai/gpt-oss-120b',
-            'messages' => $messages,
-            'temperature' => $temperature,
-            'max_completion_tokens' => $maxTokens,
-            'top_p' => 1,
-            'reasoning_effort' => 'low',
+        // Auto-fallback models list
+        $models = [
+            'openai/gpt-oss-120b',
+            'openai/gpt-oss-20b',
+            'openai/gpt-oss-safeguard-20b'
         ];
 
-        if ($jsonFormat) {
-            $payload['response_format'] = ['type' => 'json_object'];
+        $rawContent = '';
+
+        foreach ($models as $model) {
+            $payload = [
+                'model' => $model,
+                'messages' => $messages,
+                'temperature' => $temperature,
+                'max_completion_tokens' => $maxTokens,
+                'top_p' => 1,
+                'reasoning_effort' => 'low',
+            ];
+
+            if ($jsonFormat) {
+                $payload['response_format'] = ['type' => 'json_object'];
+            }
+
+            $response = Http::withOptions([
+                'verify' => false,
+            ])
+            ->retry(3, 1000, function () { return true; }, false)
+            ->withToken(config('services.groq.key'))
+            ->post('https://api.groq.com/openai/v1/chat/completions', $payload);
+
+            if ($response->successful()) {
+                $rawContent = $response->json('choices.0.message.content', $jsonFormat ? '{}' : '');
+                break; // Stop loop, we got a successful response
+            } else {
+                \Log::warning("LLM API Error with model {$model}: " . $response->body());
+                // Will automatically continue loop to try the next model
+            }
         }
-
-        $response = Http::withOptions([
-            'verify' => false,
-        ])
-        ->retry(3, 1000, function () { return true; }, false)
-        ->withToken(config('services.groq.key'))
-        ->post('https://api.groq.com/openai/v1/chat/completions', $payload);
-
-        $rawContent = $response->json('choices.0.message.content', $jsonFormat ? '{}' : '');
 
         if ($jsonFormat) {
             $rawContent = trim(str_replace(['```json', '```'], '', $rawContent));
@@ -215,7 +234,10 @@ trait ChatMethodHandler
         - Use the business context above to keep the conversation relevant.
         - If available services exist, use them naturally to understand what the user may be looking for.
         - When appropriate, gently move the conversation toward understanding what the user needs by asking a simple question.
+        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example in brackets based on the Business Niche ({$niche}) so the user knows exactly how to answer.
+        - For instance, if Interior: "(jaise ki L-shape ya U-shape?)". If Dentist: "(jaise ki root canal ya cleaning?)". If Used Cars: "(jaise ki automatic ya manual?)". If Pest Control: "(jaise ki bedbugs ya termites?)".
         PROMPT;
+
 
         $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 256);
 
@@ -223,6 +245,43 @@ trait ChatMethodHandler
             'status' => true,
             'data' => [
                 'reply' => $reply ?: 'Achha thik hai, koi aur kaam ho toh batana.',
+            ],
+            'code' => 200,
+        ];
+    }
+
+    public function handleFallback(string $message, array $chat = [])
+    {
+        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
+        $bio = $this->businessContext['backendData']['bio'] ?? '';
+        $services = $this->businessContext['backendData']['services'] ?? [];
+        $servicesText = empty($services) ? 'None' : implode(', ', $services);
+
+        $prompt = <<<PROMPT
+        You are a helpful AI assistant for a business. The user's latest message is slightly unclear or out of context. 
+        Read the chat history to understand the context.
+
+        Business Niche: {$niche}
+        Business BIO: {$bio}
+        Available services: {$servicesText}
+
+        INSTRUCTIONS:
+        - If the user's message is a follow-up or clarification about a service (e.g., "kya?", "price bata"), answer them naturally based on context, or politely ask them to clarify what they want to know.
+        - If the message is completely broken or makes no sense, politely say that you didn't catch that and ask them to repeat.
+        - ALWAYS respond in casual Hinglish. Use "tum", never "aap". No Devanagari.
+        - Do not act like a robot.
+        - Do not use markdown or lists. Keep it short (1-2 sentences).
+        PROMPT;
+
+        $reply = $this->callLLM($prompt, $message, $chat, false, 0.7, 256);
+
+        // API/Network failure hardcoded fallback
+        $fallbackReply = 'Bhai lagta hai thoda network issue tha, main theek se samajh nahi paya. Ek baar phir se bataoge tum kya dhoond rahe ho?';
+
+        return [
+            'status' => true,
+            'data' => [
+                'reply' => empty($reply) ? $fallbackReply : $reply,
             ],
             'code' => 200,
         ];
@@ -276,19 +335,9 @@ trait ChatMethodHandler
         $identification = $this->callLLM($prompt, $message, $chat, true, 0.1, 128);
         $attribute = $identification['attribute'] ?? null;
 
-        // 3. If no attribute identified, ask what they want to know
+        // 3. If no attribute identified, use handleFallback to answer clarifications fast using chat history
         if (!$attribute || !in_array($attribute, $attributes)) {
-            $prompt = <<<PROMPT
-            The user is talking about '{$activeService}', but we don't know what exactly they want to know (e.g. Price, Process, Timeline, etc.).
-            
-            - Ask them naturally in casual Hinglish what specific information they need about '{$activeService}'.
-            - ALWAYS use "tum", never "aap".
-            - NEVER output Devanagari script.
-            - Keep it short (1-2 sentences).
-            PROMPT;
-            
-            $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 128);
-            return ['status' => true, 'data' => ['reply' => $reply]];
+            return $this->handleFallback($message, $chat);
         }
 
         // 4. Fetch info from DB

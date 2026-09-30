@@ -95,15 +95,15 @@ class ChatEngineService
                 }
 
             } else {
-                $intentName = "casualChat"; // Fallback to casual chat
-                $result = $this->casualChat($message, $this->chatContext['casualChatHistory'] ?? []);
+                $intentName = "fallback"; // Improved fallback handler
+                $result = $this->handleFallback($message, $this->chatContext['infoHistory'] ?? []);
 
-                $this->chatContext['casualChatHistory'][] = ['role' => 'user', 'content' => $message];
+                $this->chatContext['infoHistory'][] = ['role' => 'user', 'content' => $message];
                 if (isset($result['data']['reply'])) {
-                    $this->chatContext['casualChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
+                    $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
                 }
-                if (count($this->chatContext['casualChatHistory']) > 6) {
-                    $this->chatContext['casualChatHistory'] = array_slice($this->chatContext['casualChatHistory'], -6);
+                if (count($this->chatContext['infoHistory']) > 6) {
+                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -6);
                 }
             }
         }
