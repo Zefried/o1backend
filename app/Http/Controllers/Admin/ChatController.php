@@ -37,17 +37,23 @@ class ChatController extends Controller
     public function publicChat(Request $request)
     {
         $request->validate([
-            'message'     => 'required|string',
-            'chat'        => 'nullable|array',
-            'business_id' => 'required|string',
+            'message'       => 'required|string',
+            'chat'          => 'nullable|array',
+            'business_id'   => 'required|string',
+            'context_state' => 'nullable|array',
+            'campaign_link' => 'nullable|string',
         ]);
 
         $message = $request->input('message');
         $chat = $request->input('chat', []);
         $businessId = $request->input('business_id');
+        $contextState = $request->input('context_state', null);
+        $campaignLink = $request->input('campaign_link', null);
 
         $context = [
-            'business_id' => $businessId
+            'business_id' => $businessId,
+            'context_state' => $contextState,
+            'campaign_link' => $campaignLink
         ];
 
         $result = $this->chatEngine->handle($message, $chat, $context);

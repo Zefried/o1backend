@@ -93,4 +93,9 @@ Route::prefix('admin')
 
         // ── Chat routes ───────────────────────────
         Route::post('/chat', [ChatController::class, 'handleChat']);
+
+        // ── Lead Qualification routes ────────────────
+        Route::post('/lead-qualifications/services', [\App\Http\Controllers\Admin\LeadQualificationController::class, 'getServices']);
+        Route::post('/lead-qualifications/save', [\App\Http\Controllers\Admin\LeadQualificationController::class, 'saveQualifications']);
+        Route::delete('/lead-qualifications/{id}', [\App\Http\Controllers\Admin\LeadQualificationController::class, 'destroy']);
     });
