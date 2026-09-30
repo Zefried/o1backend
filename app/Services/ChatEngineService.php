@@ -32,6 +32,7 @@ class ChatEngineService
     public function handle(string $message, array $chat = [], array $context = [])
     {
         $this->setState($context);
+        $this->initializeLeadQualificationState();
 
         // --------------------------
 
@@ -53,6 +54,8 @@ class ChatEngineService
                 if ($serviceRow) {
                     $this->businessContext['backendData']['UserServiceDemandId'] = $serviceRow->id;
                 }
+                
+                $this->initializeLeadQualificationState();
             }
 
             if (($intent['abusiveOrStupid'] ?? false) === true) {
@@ -189,6 +192,52 @@ class ChatEngineService
                 if ($service) {
                     $this->businessContext['backendData']['UserServiceDemand'] = $service->name;
                     $this->businessContext['backendData']['UserServiceDemandId'] = $campaign->service_id;
+                }
+            }
+        }
+    }
+
+    private function initializeLeadQualificationState()
+    {
+        if (!isset($this->chatContext['leadQualificationState'])) {
+            $this->chatContext['leadQualificationState'] = [];
+        }
+
+        $businessId = $this->businessId;
+        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
+        $activeServiceId = $this->businessContext['backendData']['UserServiceDemandId'] ?? null;
+
+        // Ensure "Global Lead Qualification" exists
+        if (!isset($this->chatContext['leadQualificationState']['Global'])) {
+            $globalService = \DB::table('services')->where('name', 'Global Lead Qualification')->first();
+            if ($globalService) {
+                $qual = \DB::table('lead_qualifications')
+                    ->where('business_id', $businessId)
+                    ->where('service_id', $globalService->id)
+                    ->first();
+                
+                if ($qual) {
+                    $this->chatContext['leadQualificationState']['Global'] = [
+                        'questions' => $qual->questions,
+                        'data' => []
+                    ];
+                }
+            }
+        }
+
+        // Ensure active service exists
+        if ($activeService && $activeServiceId) {
+            if (!isset($this->chatContext['leadQualificationState'][$activeService])) {
+                $qual = \DB::table('lead_qualifications')
+                    ->where('business_id', $businessId)
+                    ->where('service_id', $activeServiceId)
+                    ->first();
+
+                if ($qual) {
+                    $this->chatContext['leadQualificationState'][$activeService] = [
+                        'questions' => $qual->questions,
+                        'data' => []
+                    ];
                 }
             }
         }
