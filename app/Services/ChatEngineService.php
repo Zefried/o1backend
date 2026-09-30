@@ -42,18 +42,66 @@ class ChatEngineService
             $result = $this->handleWelcome();
         } else {
             $intent = $this->checkIntent($message, $chat);
+
+            // Handle Topic Change inside the same business niche
+            if (($intent['topicChange'] ?? false) === true && !empty($intent['newServiceDemand'])) {
+                $newService = $intent['newServiceDemand'];
+                $this->businessContext['backendData']['UserServiceDemand'] = $newService;
+
+                // Fetch new service ID to keep it in sync
+                $serviceRow = \DB::table('services')->where('name', $newService)->first();
+                if ($serviceRow) {
+                    $this->businessContext['backendData']['UserServiceDemandId'] = $serviceRow->id;
+                }
+            }
+
             if (($intent['abusiveOrStupid'] ?? false) === true) {
                 $intentName = "abusiveOrStupid";
-                $result = ['status' => true, 'data' => ['reply' => 'Abusive handling pending']];
+                $result = $this->abusiveOrStupidHandler($message, $this->chatContext['abusiveChatHistory'] ?? []);
+                
+                $this->chatContext['abusiveChatHistory'][] = ['role' => 'user', 'content' => $message];
+                if (isset($result['data']['reply'])) {
+                    $this->chatContext['abusiveChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
+                }
+                if (count($this->chatContext['abusiveChatHistory']) > 6) {
+                    $this->chatContext['abusiveChatHistory'] = array_slice($this->chatContext['abusiveChatHistory'], -6);
+                }
+
             } elseif (($intent['casualChat'] ?? false) === true) {
                 $intentName = "casualChat";
-                $result = ['status' => true, 'data' => ['reply' => 'Casual chat handling pending']];
+                $result = $this->casualChat($message, $this->chatContext['casualChatHistory'] ?? []);
+
+                $this->chatContext['casualChatHistory'][] = ['role' => 'user', 'content' => $message];
+                if (isset($result['data']['reply'])) {
+                    $this->chatContext['casualChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
+                }
+                if (count($this->chatContext['casualChatHistory']) > 6) {
+                    $this->chatContext['casualChatHistory'] = array_slice($this->chatContext['casualChatHistory'], -6);
+                }
+
             } elseif (($intent['userRequestInfo'] ?? false) === true) {
                 $intentName = "userRequestInfo";
-                $result = ['status' => true, 'data' => ['reply' => 'User Request Info handling pending']];
+                $result = $this->handleUserRequestInfo($message, $this->chatContext['infoHistory'] ?? []);
+
+                $this->chatContext['infoHistory'][] = ['role' => 'user', 'content' => $message];
+                if (isset($result['data']['reply'])) {
+                    $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
+                }
+                if (count($this->chatContext['infoHistory']) > 6) {
+                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -6);
+                }
+
             } else {
                 $intentName = "casualChat"; // Fallback to casual chat
-                $result = ['status' => true, 'data' => ['reply' => 'Unknown intent fallback']];
+                $result = $this->casualChat($message, $this->chatContext['casualChatHistory'] ?? []);
+
+                $this->chatContext['casualChatHistory'][] = ['role' => 'user', 'content' => $message];
+                if (isset($result['data']['reply'])) {
+                    $this->chatContext['casualChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
+                }
+                if (count($this->chatContext['casualChatHistory']) > 6) {
+                    $this->chatContext['casualChatHistory'] = array_slice($this->chatContext['casualChatHistory'], -6);
+                }
             }
         }
 
@@ -87,7 +135,13 @@ class ChatEngineService
             if (isset($state['businessContext']['contextKey'])) {
                 $this->businessContext['contextKey'] = $state['businessContext']['contextKey'];
             }
-            // Do not merge backendData from frontend to ensure we always use the latest DB fetch
+            // Keep the user's selected service from the frontend state instead of resetting to the DB default
+            if (!empty($state['businessContext']['backendData']['UserServiceDemand'])) {
+                $this->businessContext['backendData']['UserServiceDemand'] = $state['businessContext']['backendData']['UserServiceDemand'];
+            }
+            if (!empty($state['businessContext']['backendData']['UserServiceDemandId'])) {
+                $this->businessContext['backendData']['UserServiceDemandId'] = $state['businessContext']['backendData']['UserServiceDemandId'];
+            }
         }
     }
 

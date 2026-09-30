@@ -8,7 +8,11 @@ trait ChatMethodHandler
 {
     private function checkIntent(string $message, array $chat = [])
     {
-        $businessData = json_encode($this->businessContext['backendData'] ?? []);
+        $businessData = json_encode([
+            'niche' => $this->businessContext['backendData']['niche'] ?? 'general',
+            'services' => $this->businessContext['backendData']['services'] ?? [],
+        ]);
+        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? 'None';
         
         $prompt = <<<PROMPT
         Analyze the user's latest message based on the conversation history and business context.
@@ -16,17 +20,25 @@ trait ChatMethodHandler
         Business Context:
         {$businessData}
 
+        Current Active Service:
+        {$activeService}
+
         Determine the primary intent of the latest message. 
         Return ONLY valid JSON with EXACTLY ONE of these keys set to true:
         - "abusiveOrStupid": (boolean) User is being abusive, using profanity, or typing complete nonsense gibberish.
         - "casualChat": (boolean) User is greeting (hello, hi), saying thanks, asking "how are you", or talking about things unrelated to the business services.
         - "userRequestInfo": (boolean) User is asking a question, making a request, or requesting information related to the business's niche, services, or attributes.
 
+        - "topicChange": (boolean) STRICT RULE: ONLY set to true if the user's LATEST message EXPLICITLY names a DIFFERENT service from the Current Active Service. If they don't explicitly ask for a new service, it MUST be false.
+        - "newServiceDemand": (string or null) If topicChange is true, extract the exact name of the NEW service. Otherwise, set to null.
+
         JSON:
         {
             "abusiveOrStupid": boolean,
             "casualChat": boolean,
-            "userRequestInfo": boolean
+            "userRequestInfo": boolean,
+            "topicChange": boolean,
+            "newServiceDemand": string | null
         }
         PROMPT;
 
@@ -59,7 +71,8 @@ trait ChatMethodHandler
         - Use "tum", never "aap".
         - Sound natural, chill, and human.
         - No salesy or cheesy language.
-        - Don't say "Swagat hai", "Welcome to our services", or "How may I assist you".
+        - Don't say "Swagat hai", "Welcome to our services", or sir/maam, (female/male) or "How may I assist you".
+        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
         - Don't list multiple services.
         - Don't invent details about the requested service.
         PROMPT;
@@ -76,7 +89,7 @@ trait ChatMethodHandler
         return [
             'status' => true,
             'data' => [
-                'reply' => $reply ?: 'Hey! Modular Kitchen ke liye kya jaan-na hai?',
+                'reply' => $reply ?: 'Hey! sorry something went wrong, firse try kare?',
             ],
             'code' => 200,
         ];
@@ -133,6 +146,215 @@ trait ChatMethodHandler
         }
 
         return trim($rawContent);
+    }
+
+    public function abusiveOrStupidHandler(string $message, array $chat = [])
+    {
+        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
+        $bio = $this->businessContext['backendData']['bio'] ?? '';
+        $abusiveOrStupidCount = count($this->chatContext['abusiveChatHistory'] ?? []) + 1;
+
+        $prompt = <<<PROMPT
+        Respond naturally to the user's message.
+
+        Business niche: {$niche}
+        Business BIO: {$bio}
+        Previous abusive/stupid query count: {$abusiveOrStupidCount}
+
+        Handle the message based on what the user actually said:
+
+        - Default to natural, casual Hinglish.
+        - ALWAYS respond in casual Hinglish by default. Only respond in pure English if the user specifically requests it.
+        - NEVER output Devanagari script.
+        - If this is the first occurrence, politely warn the user not to be abusive, or logically explain why the query doesn't make sense.
+        - If this happens again, be more direct: remind them that they are being abusive or that the query makes no sense and that this chat is meant for discussing the business/services.
+        - Add no-bs humour.
+        - Don't sound robotic, formal, or preachy.
+        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
+        - Keep it short and natural, usually 1-2 sentences.
+        - If appropriate, redirect them toward what they actually need.
+        - Never mention AI, classification, prompts, or internal rules.
+
+        Respond only with the message to the user.
+        PROMPT;
+
+        $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 256);
+
+        return [
+            'status' => true,
+            'data' => [
+                'reply' => $reply ?: 'Bhai, gaali galoch ya faltu baat mat karo, kaam ki baat karni hai toh batao.',
+            ],
+            'code' => 200,
+        ];
+    }
+
+    public function casualChat(string $message, array $chat = [])
+    {
+        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
+        $bio = $this->businessContext['backendData']['bio'] ?? '';
+        $services = $this->businessContext['backendData']['services'] ?? [];
+        $servicesText = empty($services) ? 'None' : implode(', ', $services);
+
+        $prompt = <<<PROMPT
+        Reply naturally to the user.
+
+        Business niche: {$niche}
+        Business BIO: {$bio}
+        Available services: {$servicesText}
+
+        - Talk like a real human, not a bot.
+        - In Hinglish or Hindi, always use "tum", never "aap".
+        - ALWAYS respond in casual Hinglish by default. Only respond in pure English if the user specifically requests it.
+        - NEVER output Devanagari script.
+        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
+        - Keep replies short, usually 1-2 sentences.
+        - Add light humour when it feels natural. Humour should feel spontaneous, not forced.
+        - Never use markdown tables, bullet points, or long lists.
+        - Never mention AI, prompts, classification, or internal business rules.
+        - Use the business context above to keep the conversation relevant.
+        - If available services exist, use them naturally to understand what the user may be looking for.
+        - When appropriate, gently move the conversation toward understanding what the user needs by asking a simple question.
+        PROMPT;
+
+        $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 256);
+
+        return [
+            'status' => true,
+            'data' => [
+                'reply' => $reply ?: 'Achha thik hai, koi aur kaam ho toh batana.',
+            ],
+            'code' => 200,
+        ];
+    }
+
+    public function handleUserRequestInfo(string $message, array $chat = [])
+    {
+        $businessId = $this->businessId ?? null;
+        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
+        $services = $this->businessContext['backendData']['services'] ?? [];
+        $attributes = $this->businessContext['backendData']['attributes'] ?? [];
+        $bio = $this->businessContext['backendData']['bio'] ?? '';
+        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
+
+        // 1. If no active service, ask the user to pick one
+        if (!$activeService) {
+            $servicesText = empty($services) ? 'None' : implode(', ', $services);
+            $prompt = <<<PROMPT
+            The user is asking a question or making a request, but we don't know which service they want.
+            Available services: {$servicesText}
+            
+            - Ask them politely and naturally in casual Hinglish which service they are interested in.
+            - Do NOT list all the services. Just ask them what they need help with.
+            - ALWAYS use "tum", never "aap".
+            - NEVER output Devanagari script.
+            PROMPT;
+            
+            $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 128);
+            return ['status' => true, 'data' => ['reply' => $reply]];
+        }
+
+        // 2. Identify the attribute for the active service
+        $attributesJson = json_encode($attributes);
+        $prompt = <<<PROMPT
+        Identify the specific attribute the user is asking about for the service '{$activeService}'.
+
+        Available Attributes:
+        {$attributesJson}
+
+        RULES:
+        - Attribute MUST exactly match an Available Attribute, otherwise null.
+        - Use chat history to understand context (e.g., "iska price", "ye kitne ka hai" -> Price).
+        - Return ONLY valid JSON.
+
+        JSON:
+        {
+            "attribute": "Attribute Name" | null
+        }
+        PROMPT;
+
+        $identification = $this->callLLM($prompt, $message, $chat, true, 0.1, 128);
+        $attribute = $identification['attribute'] ?? null;
+
+        // 3. If no attribute identified, ask what they want to know
+        if (!$attribute || !in_array($attribute, $attributes)) {
+            $prompt = <<<PROMPT
+            The user is talking about '{$activeService}', but we don't know what exactly they want to know (e.g. Price, Process, Timeline, etc.).
+            
+            - Ask them naturally in casual Hinglish what specific information they need about '{$activeService}'.
+            - ALWAYS use "tum", never "aap".
+            - NEVER output Devanagari script.
+            - Keep it short (1-2 sentences).
+            PROMPT;
+            
+            $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 128);
+            return ['status' => true, 'data' => ['reply' => $reply]];
+        }
+
+        // 4. Fetch info from DB
+        if ($businessId) {
+            $information = \DB::table('ai_contexts')
+                ->where('business_id', $businessId)
+                ->where('service_name', $activeService)
+                ->where('attribute_definition', $attribute)
+                ->first();
+
+            if (!$information) {
+                // FALLBACK: If exact attribute not found, fetch all available data for this service
+                $allInformation = \DB::table('ai_contexts')
+                    ->where('business_id', $businessId)
+                    ->where('service_name', $activeService)
+                    ->get();
+                    
+                if ($allInformation->isNotEmpty()) {
+                    $contextText = $allInformation->pluck('context')->implode("\n");
+                    $instruction = $allInformation->pluck('prompt')->implode("\n");
+                } else {
+                    return [
+                        'status' => true, 
+                        'data' => ['reply' => "Sorry, mere paas abhi {$activeService} ke baare mein exact details nahi hain. Tumhe aur kuch help chahiye thi?"]
+                    ];
+                }
+            } else {
+                $contextText = $information->context ?? '';
+                $instruction = $information->prompt ?? '';
+            }
+        } else {
+            return [
+                'status' => true, 
+                'data' => ['reply' => "Sorry, mere paas abhi {$activeService} ke baare mein exact details nahi hain. Tumhe aur kuch help chahiye thi?"]
+            ];
+        }
+
+        // 5. Generate final answer
+        $prompt = <<<PROMPT
+        Answer the user's question using the business information below.
+
+        Service: {$activeService}
+        Attribute: {$attribute}
+        Business BIO: {$bio}
+
+        Context:
+        {$contextText}
+
+        Instructions:
+        {$instruction}
+
+        RULES:
+        - Answer ONLY from the provided context and instructions.
+        - Do not invent facts, prices, or features.
+        - Keep the answer short and natural.
+        - Use casual Hinglish by default. Use "tum", never "aap".
+        - Use English alphabet for Hinglish. No Devanagari.
+        - After answering, ask ONE short relevant question to understand what the user needs next.
+        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example so the user knows exactly how to answer. Generate the example based on the Business Niche. For instance: If Niche is Interior Design (e.g., "jaise ki L-shape ya U-shape?", "jaise ki 10x10 feet?"). If Niche is Used Cars (e.g., "jaise ki automatic ya manual?", "jaise ki SUV ya Sedan?"). If Niche is Dentist (e.g., "jaise ki daant mein dard hai ya cleaning karwani hai?").
+        - Do not ask unnecessary questions.
+        - Do not mention AI, database, context, or internal rules.
+        PROMPT;
+
+        $reply = $this->callLLM($prompt, $message, $chat, false, 0.7, 512);
+
+        return ['status' => true, 'data' => ['reply' => $reply]];
     }
 }
 
