@@ -347,7 +347,8 @@ trait ChatMethodHandler
         - Use casual Hinglish by default. Use "tum", never "aap".
         - Use English alphabet for Hinglish. No Devanagari.
         - After answering, ask ONE short relevant question to understand what the user needs next.
-        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example so the user knows exactly how to answer. Generate the example based on the Business Niche. For instance: If Niche is Interior Design (e.g., "jaise ki L-shape ya U-shape?", "jaise ki 10x10 feet?"). If Niche is Used Cars (e.g., "jaise ki automatic ya manual?", "jaise ki SUV ya Sedan?"). If Niche is Dentist (e.g., "jaise ki daant mein dard hai ya cleaning karwani hai?").
+        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example in brackets based on the Business Niche ({$niche}) so the user knows exactly how to answer.
+        - For instance, if Interior: "(jaise ki L-shape ya U-shape?)". If Dentist: "(jaise ki root canal ya cleaning?)". If Used Cars: "(jaise ki automatic ya manual?)". If Pest Control: "(jaise ki bedbugs ya termites?)".
         - Do not ask unnecessary questions.
         - Do not mention AI, database, context, or internal rules.
         PROMPT;
