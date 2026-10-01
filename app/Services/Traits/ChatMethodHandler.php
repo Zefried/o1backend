@@ -29,8 +29,8 @@ trait ChatMethodHandler
         - "casualChat": (boolean) User is greeting (hello, hi), saying thanks, asking "how are you". STRICT RULE: DO NOT set to true for short follow-up questions like "kya?", "kaise?", "matlab?", these should be userRequestInfo.
         - "userRequestInfo": (boolean) User is asking a question, making a request, or requesting information related to the business's niche, services, or attributes.
 
-        - "topicChange": (boolean) STRICT RULE: Set to true if the user's LATEST message names or implies a DIFFERENT service from the Current Active Service (e.g., if active is "Modular Kitchen" and they ask about "False Ceiling", this is true).
-        - "newServiceDemand": (string or null) If topicChange is true, extract the exact name of the NEW service from the Available Services in Business Context. Otherwise, set to null.
+        - "topicChange": (boolean) STRICT RULE: Set to true if the user's LATEST message names, implies, or asks about a DIFFERENT service from the Current Active Service. Carefully check the Available Services list! (e.g., if active is "Living Room Design" and they mention "flooring", and "Flooring" is in the Available Services, this IS a topic change!).
+        - "newServiceDemand": (string or null) If topicChange is true, extract the EXACT matching name of the NEW service from the Available Services list. Otherwise, set to null.
 
         JSON:
         {
