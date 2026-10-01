@@ -60,4 +60,30 @@ class ChatController extends Controller
 
         return response()->json($result, $result['code'] ?? 200);
     }
+    public function publicEyeOnResponses(Request $request)
+    {
+        $request->validate([
+            'userMessage' => 'required|string',
+            'aiReply' => 'required|string',
+            'chatContext' => 'nullable|array',
+        ]);
+
+        $userMessage = $request->input('userMessage');
+        $aiReply = $request->input('aiReply');
+        $chatContext = $request->input('chatContext', []);
+
+        $result = [
+            'data' => [
+                'reply' => $aiReply
+            ]
+        ];
+
+        // Call the decoupled rough engine
+        $finalResult = $this->chatEngine->eyeOnResponses($result, $userMessage, $chatContext);
+
+        return response()->json([
+            'status' => true,
+            'data' => $finalResult['data']['eye_monitor'] ?? null
+        ]);
+    }
 }

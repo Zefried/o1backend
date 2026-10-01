@@ -54,8 +54,32 @@ trait ChatMethodHandler
         $niche = $backend['niche'] ?? 'general';
         $bio = $backend['bio'] ?? '';
         $userServiceDemand = $backend['UserServiceDemand'] ?? null;
+        
+        $infoHistory = $this->chatContext['infoHistory'] ?? [];
 
-        $prompt = <<<PROMPT
+        if (!empty($infoHistory)) {
+            $prompt = <<<PROMPT
+        You are an AI assistant for a business in the '{$niche}' niche.
+
+        Business BIO: {$bio}
+        User's requested service: {$userServiceDemand}
+
+        The user is returning to the chat. You have access to their previous conversation history.
+        Welcome them back naturally (e.g., "Welcome back!" or "Hey again!").
+        Briefly and warmly mention what they were last discussing based on the chat history (e.g., "Last time hum modular kitchen ke price par baat kar rahe the") and ask if they want to continue from there or if they need help with something else.
+
+        RULES:
+        - Keep it 1 short sentence, maximum 2.
+        - Start in casual Hinglish.
+        - Use English alphabet only.
+        - Use "tum", never "aap".
+        - Sound natural, chill, and human.
+        - No salesy or cheesy language.
+        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon".
+        PROMPT;
+            $chatData = $infoHistory;
+        } else {
+            $prompt = <<<PROMPT
         You are an AI assistant for a business in the '{$niche}' niche.
 
         Business BIO: {$bio}
@@ -78,11 +102,13 @@ trait ChatMethodHandler
         - Don't list multiple services.
         - Don't invent details about the requested service.
         PROMPT;
+            $chatData = [];
+        }
 
         $reply = $this->callLLM(
             $prompt,
             "Hello",
-            [],
+            $chatData,
             false,
             0.7,
             128
@@ -376,6 +402,19 @@ trait ChatMethodHandler
         }
 
         // 5. Generate final answer
+        $shouldAskQuery = \Illuminate\Support\Facades\Cache::pull('disable_query_' . request()->ip(), true);
+
+        if ($shouldAskQuery === false) {
+            $questionRule = "- IMPORTANT: DO NOT ask any follow-up questions at the end of your response. Just provide the answer and stop naturally.";
+        } else {
+            $questionRule = <<<RULE
+        - After answering, ask ONE short relevant question to understand what the user needs next.
+        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example in brackets based on the Business Niche ({$niche}) so the user knows exactly how to answer.
+        - For instance, if Interior: "(jaise ki L-shape ya U-shape?)". If Dentist: "(jaise ki root canal ya cleaning?)". If Used Cars: "(jaise ki automatic ya manual?)". If Pest Control: "(jaise ki bedbugs ya termites?)".
+        - Do not ask unnecessary questions.
+        RULE;
+                }
+
         $prompt = <<<PROMPT
         Answer the user's question using the business information below.
 
@@ -395,10 +434,7 @@ trait ChatMethodHandler
         - Keep the answer short and natural.
         - Use casual Hinglish by default. Use "tum", never "aap".
         - Use English alphabet for Hinglish. No Devanagari.
-        - After answering, ask ONE short relevant question to understand what the user needs next.
-        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example in brackets based on the Business Niche ({$niche}) so the user knows exactly how to answer.
-        - For instance, if Interior: "(jaise ki L-shape ya U-shape?)". If Dentist: "(jaise ki root canal ya cleaning?)". If Used Cars: "(jaise ki automatic ya manual?)". If Pest Control: "(jaise ki bedbugs ya termites?)".
-        - Do not ask unnecessary questions.
+        {$questionRule}
         - Do not mention AI, database, context, or internal rules.
         PROMPT;
 

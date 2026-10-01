@@ -4,10 +4,11 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use App\Services\Traits\ChatMethodHandler;
+use App\Services\Traits\LeadQualificationTraits;
 
 class ChatEngineService
 {
-    use ChatMethodHandler;
+    use ChatMethodHandler, LeadQualificationTraits;
 
     private ?string $businessId = null;
 
