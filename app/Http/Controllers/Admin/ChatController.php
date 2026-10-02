@@ -86,4 +86,28 @@ class ChatController extends Controller
             'data' => $finalResult['data']['eye_monitor'] ?? null
         ]);
     }
+
+    public function extractLeadData(Request $request)
+    {
+        $request->validate([
+            'infoHistory' => 'required|array',
+            'chatContext'  => 'required|array',
+            'businessContext' => 'required|array',
+        ]);
+
+        $infoHistory    = $request->input('infoHistory', []);
+        $chatContext    = $request->input('chatContext', []);
+        $businessContext = $request->input('businessContext', []);
+
+        $updatedState = $this->chatEngine->extractLeadDataFromHistory(
+            $infoHistory,
+            $chatContext,
+            $businessContext
+        );
+
+        return response()->json([
+            'status' => true,
+            'data'   => ['leadQualificationState' => $updatedState]
+        ]);
+    }
 }

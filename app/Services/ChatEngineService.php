@@ -25,9 +25,7 @@ class ChatEngineService
     ];
 
     private array $chatContext = [
-        'infoHistory' => [],
-        'casualChatHistory' => [],
-        'abusiveChatHistory' => []
+        'infoHistory' => []
     ];
 
     public function handle(string $message, array $chat = [], array $context = [])
@@ -59,54 +57,43 @@ class ChatEngineService
                 $this->initializeLeadQualificationState();
             }
 
-            if (($intent['abusiveOrStupid'] ?? false) === true) {
-                $intentName = "abusiveOrStupid";
-                $result = $this->abusiveOrStupidHandler($message, $this->chatContext['abusiveChatHistory'] ?? []);
-                
-                $this->chatContext['abusiveChatHistory'][] = ['role' => 'user', 'content' => $message];
-                if (isset($result['data']['reply'])) {
-                    $this->chatContext['abusiveChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
-                }
-                if (count($this->chatContext['abusiveChatHistory']) > 8) {
-                    $this->chatContext['abusiveChatHistory'] = array_slice($this->chatContext['abusiveChatHistory'], -8);
-                }
-
-            } elseif (($intent['casualChat'] ?? false) === true) {
-                $intentName = "casualChat";
-                $result = $this->casualChat($message, $this->chatContext['casualChatHistory'] ?? []);
-
-                $this->chatContext['casualChatHistory'][] = ['role' => 'user', 'content' => $message];
-                if (isset($result['data']['reply'])) {
-                    $this->chatContext['casualChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
-                }
-                if (count($this->chatContext['casualChatHistory']) > 8) {
-                    $this->chatContext['casualChatHistory'] = array_slice($this->chatContext['casualChatHistory'], -8);
-                }
-
-            } elseif (($intent['userRequestInfo'] ?? false) === true) {
-                $intentName = "userRequestInfo";
-                $result = $this->handleUserRequestInfo($message, $this->chatContext['infoHistory'] ?? []);
-
-                $this->chatContext['infoHistory'][] = ['role' => 'user', 'content' => $message];
-                if (isset($result['data']['reply'])) {
-                    $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
-                }
-                if (count($this->chatContext['infoHistory']) > 8) {
-                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -8);
-                }
-
-            } else {
-                $intentName = "fallback"; // Improved fallback handler
-                $result = $this->handleFallback($message, $this->chatContext['infoHistory'] ?? []);
-
-                $this->chatContext['infoHistory'][] = ['role' => 'user', 'content' => $message];
-                if (isset($result['data']['reply'])) {
-                    $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
-                }
-                if (count($this->chatContext['infoHistory']) > 8) {
-                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -8);
+            // Retroactive Bubble 2 Push
+            $cachedQuery = \Illuminate\Support\Facades\Cache::get('qual_query_' . request()->ip());
+            if ($cachedQuery && !empty($cachedQuery['question'])) {
+                $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $cachedQuery['question']];
+                if (($intent['ResponseToQualification'] ?? false) !== true) {
+                    \Illuminate\Support\Facades\Cache::forget('qual_query_' . request()->ip());
                 }
             }
+
+            // 1. Dynamic Extraction: If the user provided info, extract it FIRST (so state is updated)
+            if (($intent['userProvidedInfo'] ?? false) === true) {
+                $this->extractDynamicInformation($message, $this->chatContext, $this->businessContext);
+            }
+
+            // 2. Handle the AI's Reply based on the intent
+            if (($intent['ResponseToQualification'] ?? false) === true) {
+                $intentName = "ResponseToQualification";
+                $result = $this->handleQualificationReply($message, $this->chatContext['infoHistory'] ?? []);
+            } elseif (($intent['userRequestInfo'] ?? false) === true || ($intent['topicChange'] ?? false) === true) {
+                $intentName = "userRequestInfo";
+                $result = $this->handleUserRequestInfo($message, $this->chatContext['infoHistory'] ?? [], $intent);
+            } else {
+                // If they ONLY provided info and didn't ask anything, acknowledge it!
+                if (($intent['userProvidedInfo'] ?? false) === true && ($intent['ResponseToQualification'] ?? false) !== true) {
+                    $intentName = "infoAcknowledgement";
+                    $result = ['status' => true, 'data' => ['reply' => "Okay, note kar liya!"]];
+                } else {
+                    $intentName = "fallback"; // Improved fallback handler
+                    $result = $this->handleFallback($message, $this->chatContext['infoHistory'] ?? []);
+                }
+            }
+
+            $this->chatContext['infoHistory'][] = ['role' => 'user', 'content' => $message];
+            if (isset($result['data']['reply'])) {
+                $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
+            }
+
         }
 
         if (isset($result['data'])) {
@@ -128,6 +115,8 @@ class ChatEngineService
         // 1. Sync dynamic chat history from frontend
         if (isset($state['chatContext']) && is_array($state['chatContext'])) {
             $this->chatContext = array_merge($this->chatContext, $state['chatContext']);
+            unset($this->chatContext['casualChatHistory']);
+            unset($this->chatContext['abusiveChatHistory']);
         }
 
         // 2. Sync static business context from frontend OR fetch from DB if missing
@@ -227,176 +216,116 @@ class ChatEngineService
         }
 
         // Ensure active service exists
-        if ($activeService && $activeServiceId) {
+        if ($activeService && $activeService !== 'None') {
             if (!isset($this->chatContext['leadQualificationState'][$activeService])) {
-                $qual = \DB::table('lead_qualifications')
-                    ->where('business_id', $businessId)
-                    ->where('service_id', $activeServiceId)
-                    ->first();
+                // Try by ID first, fall back to name lookup
+                $serviceId = $activeServiceId;
+                if (!$serviceId) {
+                    $svc = \DB::table('services')
+                        ->where('business_id', $businessId)
+                        ->where('name', $activeService)
+                        ->first();
+                    $serviceId = $svc->id ?? null;
+                    if ($serviceId) {
+                        $this->businessContext['backendData']['UserServiceDemandId'] = $serviceId;
+                    }
+                }
 
-                if ($qual) {
-                    $this->chatContext['leadQualificationState'][$activeService] = [
-                        'questions' => $qual->questions,
-                        'data' => []
-                    ];
+                if ($serviceId) {
+                    $qual = \DB::table('lead_qualifications')
+                        ->where('business_id', $businessId)
+                        ->where('service_id', $serviceId)
+                        ->first();
+
+                    if ($qual) {
+                        $this->chatContext['leadQualificationState'][$activeService] = [
+                            'questions' => $qual->questions,
+                            'data' => []
+                        ];
+                    }
                 }
             }
         }
     }
+
+    /**
+     * Independent background extraction method.
+     * Called from frontend after shadow question is answered.
+     * Scans full infoHistory and extracts any answers to pending qualification questions.
+     */
+    public function extractLeadDataFromHistory(array $infoHistory, array $chatContext, array $businessContext): array
+    {
+        $this->chatContext    = $chatContext;
+        $this->businessContext = $businessContext;
+
+        $demandService = $businessContext['backendData']['UserServiceDemand'] ?? null;
+        if (!$demandService || $demandService === 'None') {
+            return $chatContext['leadQualificationState'] ?? [];
+        }
+
+        $leadState = $chatContext['leadQualificationState'] ?? [];
+        $globalQuestions  = $leadState['Global']['questions'] ?? '';
+        $serviceQuestions = $leadState[$demandService]['questions'] ?? '';
+
+        $allQuestionsList = [];
+        if (!empty($globalQuestions))  $allQuestionsList[] = $globalQuestions;
+        if (!empty($serviceQuestions)) $allQuestionsList[] = $serviceQuestions;
+        $allQuestions = implode(', ', $allQuestionsList);
+
+        if (empty($allQuestions)) {
+            return $chatContext['leadQualificationState'] ?? [];
+        }
+
+        $historyText = '';
+        foreach ($infoHistory as $msg) {
+            $role = $msg['role'] === 'user' ? 'User' : 'AI';
+            $historyText .= "{$role}: " . $msg['content'] . "\n";
+        }
+
+        $prompt = <<<PROMPT
+        You are a data extraction assistant. Read the full chat history and extract answers to the pending qualification questions.
+
+        Pending Questions (field=priority): {$allQuestions}
+
+        Chat History:
+        {$historyText}
+
+        Task:
+        1. Go through the chat history carefully.
+        2. For each pending question field, check if the user has provided an answer at any point.
+        3. If the user says they don't know, haven't decided, or denied/skipped — treat that as "Not decided yet".
+        4. Only extract fields that are in the Pending Questions list.
+
+        Return ONLY valid JSON:
+        {
+            "extractions": [
+                {"field": "Budget", "value": "80k"},
+                {"field": "Requirements", "value": "Not decided yet"}
+            ]
+        }
+        If nothing found, return: {"extractions": []}
+        PROMPT;
+
+        $response = $this->callLLM($prompt, '', [], true, 0.1, 512);
+        $extractions = $response['extractions'] ?? [];
+
+        foreach ($extractions as $item) {
+            if (!isset($item['field']) || !isset($item['value'])) continue;
+
+            $field = $item['field'];
+            $value = $item['value'];
+
+            if (str_contains($globalQuestions, $field)) {
+                $this->chatContext['leadQualificationState']['Global']['data'][] = [$field => $value];
+                $this->chatContext['leadQualificationState']['Global']['questions'] =
+                    trim(preg_replace('/' . preg_quote($field, '/') . '=\d+(,\s*)?/', '', $this->chatContext['leadQualificationState']['Global']['questions']), ', ');
+            } elseif (isset($this->chatContext['leadQualificationState'][$demandService])) {
+                $this->chatContext['leadQualificationState'][$demandService]['data'][] = [$field => $value];
+                $this->chatContext['leadQualificationState'][$demandService]['questions'] =
+                    trim(preg_replace('/' . preg_quote($field, '/') . '=\d+(,\s*)?/', '', $this->chatContext['leadQualificationState'][$demandService]['questions']), ', ');
+            }
+        }
+
+        return $this->chatContext['leadQualificationState'];
+    }
 }
-
-// class ChatEngineService_Old
-// {
-//     use ChatMethodHandler;
-    
-//     private string $businessBIO = '';
-//     private string $businessNiche = '';
-//     private array $businessServices = [];
-//     private array $businessAttributes = [];
-//     private ?string $businessId = null;
-    
-//     // Dynamic tracking during conversation
-//     private array $serviceRequest = [];
-//     private array $attributeRequest = [];
-//     private array $infoHistory = [];
-//     private ?string $activeService = null;
-//     private ?string $activeAttribute = null;
-
-//     public function handle(string $message, array $chat = [], array $context = [])
-//     {
-//         $this->setState($context);
-
-//         // DEBUG: Return state directly to test if setState works
-//         /*
-//         return [
-//             'status' => true,
-//             'data' => [
-//                 'reply' => "Debug State -> Niche: {$this->businessNiche} | Bio: {$this->businessBIO} | Services: " . count($this->businessServices) . " | ServiceRequest: " . json_encode($this->serviceRequest)
-//             ],
-//             'code' => 200,
-//         ];
-//         */
-
-//         // Intercept initial "Hello" greeting (empty chat history)
-//         if (trim(strtolower($message)) === 'hello' && empty($chat)) {
-//             $result = $this->handleWelcome();
-//         } else {
-//             $intent = $this->checkIntent($message, $chat);
-
-//             if (($intent['abusiveOrStupid'] ?? false) === true) {
-//                 $result = $this->abusiveOrStupidHandler($message, $chat);
-//             } elseif (($intent['casualChat'] ?? false) === true) {
-//                 $result = $this->casualChat($message, $chat);
-//             } elseif (($intent['userRequestInfo'] ?? false) === true) {
-//                 $result = $this->handleUserRequest($message, $chat, $context);
-                
-//                 $this->infoHistory[] = ['role' => 'user', 'content' => $message];
-//                 if (isset($result['data']['reply'])) {
-//                     $this->infoHistory[] = ['role' => 'assistant', 'content' => $result['data']['reply']];
-//                 }
-//                 if (count($this->infoHistory) > 4) {
-//                     $this->infoHistory = array_slice($this->infoHistory, -4);
-//                 }
-//             } else {
-//                 // Fallback: If AI fails and returns all false, default to casualChat
-//                 $result = $this->casualChat($message, $chat);
-//             }
-//         }
-
-//         // Inject the context_state so frontend can persist it
-//         if (isset($result['status']) && $result['status'] === true && isset($result['data'])) {
-//             $result['data']['context_state'] = [
-//                 'businessBIO' => $this->businessBIO,
-//                 'businessNiche' => $this->businessNiche,
-//                 'businessServices' => $this->businessServices,
-//                 'businessAttributes' => $this->businessAttributes,
-//                 'serviceRequest' => $this->serviceRequest,
-//                 'attributeRequest' => $this->attributeRequest,
-//                 'infoHistory' => $this->infoHistory,
-//                 'activeService' => $this->activeService,
-//                 'activeAttribute' => $this->activeAttribute,
-//             ];
-//         }
-
-//         return $result;
-//     }
-
-//     // private function setState(array $context = [])
-//     // {
-//     //     $this->businessId = $context['business_id'] ?? null;
-
-//     //     $state = $context['context_state'] ?? null;
-//     //     if ($state && is_array($state) && !empty($state)) {
-//     //         // Frontend provided the state, use it (skip DB queries)
-//     //         $this->businessBIO = $state['businessBIO'] ?? 'our services';
-//     //         $this->businessNiche = $state['businessNiche'] ?? 'general';
-//     //         $this->businessServices = $state['businessServices'] ?? [];
-//     //         $this->businessAttributes = $state['businessAttributes'] ?? [];
-//     //         $this->serviceRequest = $state['serviceRequest'] ?? [];
-//     //         $this->attributeRequest = $state['attributeRequest'] ?? [];
-//     //         $this->infoHistory = $state['infoHistory'] ?? [];
-//     //         $this->activeService = $state['activeService'] ?? null;
-//     //         $this->activeAttribute = $state['activeAttribute'] ?? null;
-//     //         return;
-//     //     }
-
-//     //     $businessId = $context['business_id'] ?? null;
-
-//     //     if (!$businessId) {
-//     //         $this->businessBIO = 'our services';
-//     //         $this->businessNiche = 'general';
-//     //         $this->businessServices = [];
-//     //         $this->businessAttributes = [];
-//     //         $this->serviceRequest = [];
-//     //         $this->attributeRequest = [];
-//     //         $this->infoHistory = [];
-//     //         $this->activeService = null;
-//     //         $this->activeAttribute = null;
-//     //         return;
-//     //     }
-
-//     //     $business = \App\Models\User::with('category')->where('role', 'business')->where('business_id', $businessId)->first();
-
-//     //     if ($business) {
-//     //         $this->businessBIO = $business->bio ?? 'our services';
-//     //         $this->businessNiche = $business->category ? $business->category->name : 'general';
-            
-//     //         $this->businessServices = \App\Models\Service::where('business_id', $businessId)
-//     //             ->where('status', 'active')
-//     //             ->pluck('name')
-//     //             ->toArray();
-                
-//     //         $this->businessAttributes = \App\Models\AttributeDefinition::where('business_id', $businessId)
-//     //             ->where('status', 'active')
-//     //             ->pluck('name')
-//     //             ->toArray();
-
-//     //         // Check if there is a target service requested via Campaign Information
-//     //         $this->serviceRequest = [];
-            
-//     //         // Get the most recent campaign for this business that has a service
-//     //         $campaign = \App\Models\CampaignInformation::with('service')
-//     //             ->where('business_id', $businessId)
-//     //             ->whereNotNull('service_id')
-//     //             ->latest()
-//     //             ->first();
-
-//     //         if ($campaign && $campaign->service) {
-//     //             $this->serviceRequest[] = $campaign->service->name;
-//     //         }
-
-//     //     } else {
-//     //         $this->businessBIO = 'our services';
-//     //         $this->businessNiche = 'general';
-//     //         $this->businessServices = [];
-//     //         $this->businessAttributes = [];
-//     //         $this->serviceRequest = [];
-//     //         $this->attributeRequest = [];
-//     //         $this->infoHistory = [];
-//     //         $this->activeService = null;
-//     //         $this->activeAttribute = null;
-//     //     }
-//     // }
-
-
-// }

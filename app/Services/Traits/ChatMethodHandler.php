@@ -14,6 +14,15 @@ trait ChatMethodHandler
         ]);
         $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? 'None';
         
+        $cachedQuery = \Illuminate\Support\Facades\Cache::get('qual_query_' . request()->ip());
+        $qualQueryPrompt = "";
+        if ($cachedQuery && !empty($cachedQuery['leadQualifyingQueryMode'])) {
+            $lastQuestion = $cachedQuery['question'] ?? '';
+            $qualQueryPrompt = "- \"ResponseToQualification\": (boolean) Set to true ONLY if the user's latest message is answering or acknowledging the AI's recent qualification question: \"{$lastQuestion}\".";
+        } else {
+            $qualQueryPrompt = "- \"ResponseToQualification\": (boolean) Always set to false.";
+        }
+
         $prompt = <<<PROMPT
         Analyze the user's latest message based on the conversation history and business context.
         
@@ -24,19 +33,19 @@ trait ChatMethodHandler
         {$activeService}
 
         Determine the primary intent of the latest message. 
-        Return ONLY valid JSON with EXACTLY ONE of these keys set to true:
-        - "abusiveOrStupid": (boolean) User is being abusive, using profanity, or typing complete nonsense gibberish.
-        - "casualChat": (boolean) User is greeting (hello, hi), saying thanks, asking "how are you". STRICT RULE: DO NOT set to true for short follow-up questions like "kya?", "kaise?", "matlab?", these should be userRequestInfo.
+        Return ONLY valid JSON with ONE OR MORE of these keys set to true:
         - "userRequestInfo": (boolean) User is asking a question, making a request, or requesting information related to the business's niche, services, or attributes.
+        - "userProvidedInfo": (boolean) Set to true if the user's message contains personal information, preferences, budget, timeline, phone number, location, etc. that could answer a business qualification question.
+        {$qualQueryPrompt}
 
         - "topicChange": (boolean) STRICT RULE: Set to true if the user's LATEST message names, implies, or asks about a DIFFERENT service from the Current Active Service. Carefully check the Available Services list! (e.g., if active is "Living Room Design" and they mention "flooring", and "Flooring" is in the Available Services, this IS a topic change!).
         - "newServiceDemand": (string or null) If topicChange is true, extract the EXACT matching name of the NEW service from the Available Services list. Otherwise, set to null.
 
         JSON:
         {
-            "abusiveOrStupid": boolean,
-            "casualChat": boolean,
             "userRequestInfo": boolean,
+            "userProvidedInfo": boolean,
+            "ResponseToQualification": boolean,
             "topicChange": boolean,
             "newServiceDemand": string | null
         }
@@ -79,28 +88,38 @@ trait ChatMethodHandler
         PROMPT;
             $chatData = $infoHistory;
         } else {
+            // CASE A: Service demand already known — jump straight to attribute qualifying question
+            if (!empty($userServiceDemand) && $userServiceDemand !== 'None') {
+                $qualQuery = $this->generateQualifyingQuery([
+                    'chatContext' => $this->chatContext,
+                    'businessContext' => $this->businessContext
+                ]);
+                
+                if ($qualQuery) {
+                    return [
+                        'status' => true,
+                        'data' => ['reply' => "Hey! " . $qualQuery],
+                        'code' => 200,
+                    ];
+                }
+            }
+
+            // CASE B: No service demand — ask what service they want
+            $servicesText = implode(', ', $backend['services'] ?? []);
             $prompt = <<<PROMPT
         You are an AI assistant for a business in the '{$niche}' niche.
 
         Business BIO: {$bio}
-        User's requested service: {$userServiceDemand}
+        Available Services: {$servicesText}
 
-        The user's requested service is the main context for this greeting.
-        Naturally acknowledge what the user appears to be interested in and ask how you can help with it.
-
-        If no requested service is available, give a general greeting based on the business niche.
+        The user just opened the chat. Ask them what service they are looking for in ONE casual Hinglish sentence.
 
         RULES:
-        - Keep it 1 short sentence, maximum 2.
-        - Start in casual Hinglish.
-        - Use English alphabet only.
-        - Use "tum", never "aap".
-        - Sound natural, chill, and human.
-        - No salesy or cheesy language.
-        - Don't say "Swagat hai", "Welcome to our services", or sir/maam, (female/male) or "How may I assist you".
-        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
-        - Don't list multiple services.
-        - Don't invent details about the requested service.
+        - Keep it 1 short sentence only.
+        - Use casual Hinglish. Use "tum", never "aap". No Devanagari.
+        - Sound natural and human. Do NOT list all services.
+        - Do not say "Swagat hai", "Welcome to our services", "sir/maam", or "How may I assist you".
+        - NEVER use "sakta/sakti hoon".
         PROMPT;
             $chatData = [];
         }
@@ -118,6 +137,12 @@ trait ChatMethodHandler
             'status' => true,
             'data' => [
                 'reply' => $reply ?: 'Hey! sorry something went wrong, firse try kare?',
+                'debug_welcome' => [
+                    'history_count' => count($infoHistory),
+                    'history_empty' => empty($infoHistory),
+                    'user_service_demand' => $userServiceDemand ?? 'null',
+                    'path_taken' => !empty($infoHistory) ? 'returning_user' : (!empty($userServiceDemand) && $userServiceDemand !== 'None' ? 'fresh_with_service_qual_failed' : 'fresh_no_service'),
+                ]
             ],
             'code' => 200,
         ];
@@ -193,84 +218,77 @@ trait ChatMethodHandler
         return trim($rawContent);
     }
 
-    public function abusiveOrStupidHandler(string $message, array $chat = [])
+    public function handleQualificationReply(string $message, array $chat = [])
     {
-        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
-        $bio = $this->businessContext['backendData']['bio'] ?? '';
-        $abusiveOrStupidCount = count($this->chatContext['abusiveChatHistory'] ?? []) + 1;
+        $cachedQuery = \Illuminate\Support\Facades\Cache::get('qual_query_' . request()->ip());
+        
+        if (!$cachedQuery) {
+            return $this->handleFallback($message, $chat);
+        }
+
+        $targetField = $cachedQuery['target_field'] ?? '';
+        $questionAsked = $cachedQuery['question'] ?? '';
 
         $prompt = <<<PROMPT
-        Respond naturally to the user's message.
+        The AI previously asked the user this question: "{$questionAsked}".
+        The user's reply is: "{$message}"
+        
+        Task: 
+        Generate a very short, polite 1-sentence acknowledgment in Hinglish (e.g. "Okay, note kar liya!" or "Got it, samajh gaya!").
 
-        Business niche: {$niche}
-        Business BIO: {$bio}
-        Previous abusive/stupid query count: {$abusiveOrStupidCount}
-
-        Handle the message based on what the user actually said:
-
-        - Default to natural, casual Hinglish.
-        - ALWAYS respond in casual Hinglish by default. Only respond in pure English if the user specifically requests it.
-        - NEVER output Devanagari script.
-        - If this is the first occurrence, politely warn the user not to be abusive, or logically explain why the query doesn't make sense.
-        - If this happens again, be more direct: remind them that they are being abusive or that the query makes no sense and that this chat is meant for discussing the business/services.
-        - Add no-bs humour.
-        - Don't sound robotic, formal, or preachy.
-        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
-        - Keep it short and natural, usually 1-2 sentences.
-        - If appropriate, redirect them toward what they actually need.
-        - Never mention AI, classification, prompts, or internal rules.
-
-        Respond only with the message to the user.
+        Return ONLY valid JSON:
+        {
+            "reply": string
+        }
         PROMPT;
 
-        $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 256);
+        $response = $this->callLLM($prompt, '', [], true, 0.1, 128);
+
+        \Illuminate\Support\Facades\Cache::forget('qual_query_' . request()->ip());
 
         return [
             'status' => true,
             'data' => [
-                'reply' => $reply ?: 'Bhai, gaali galoch ya faltu baat mat karo, kaam ki baat karni hai toh batao.',
-            ],
-            'code' => 200,
+                'reply' => $response['reply'] ?? 'Okay, noted!'
+            ]
         ];
     }
 
-    public function casualChat(string $message, array $chat = [])
+    public function handleClosing()
     {
-        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
-        $bio = $this->businessContext['backendData']['bio'] ?? '';
-        $services = $this->businessContext['backendData']['services'] ?? [];
-        $servicesText = empty($services) ? 'None' : implode(', ', $services);
+        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
+        $bio           = $this->businessContext['backendData']['bio'] ?? '';
+
+        $collectedData = [];
+        if ($activeService && isset($this->chatContext['leadQualificationState'][$activeService]['data'])) {
+            $collectedData = $this->chatContext['leadQualificationState'][$activeService]['data'];
+        }
+        $globalData = $this->chatContext['leadQualificationState']['Global']['data'] ?? [];
+        $allData    = array_merge($collectedData, $globalData);
+        $summary    = empty($allData) ? 'None' : json_encode($allData);
 
         $prompt = <<<PROMPT
-        Reply naturally to the user.
-
-        Business niche: {$niche}
+        The conversation is complete. We have collected all the information we need from the user.
+        
+        Collected Information: {$summary}
         Business BIO: {$bio}
-        Available services: {$servicesText}
+        Service: {$activeService}
 
-        - Talk like a real human, not a bot.
-        - In Hinglish or Hindi, always use "tum", never "aap".
-        - ALWAYS respond in casual Hinglish by default. Only respond in pure English if the user specifically requests it.
-        - NEVER output Devanagari script.
-        - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
-        - Keep replies short, usually 1-2 sentences.
-        - Add light humour when it feels natural. Humour should feel spontaneous, not forced.
-        - Never use markdown tables, bullet points, or long lists.
-        - Never mention AI, prompts, classification, or internal business rules.
-        - Use the business context above to keep the conversation relevant.
-        - If available services exist, use them naturally to understand what the user may be looking for.
-        - When appropriate, gently move the conversation toward understanding what the user needs by asking a simple question.
-        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example in brackets based on the Business Niche ({$niche}) so the user knows exactly how to answer.
-        - For instance, if Interior: "(jaise ki L-shape ya U-shape?)". If Dentist: "(jaise ki root canal ya cleaning?)". If Used Cars: "(jaise ki automatic ya manual?)". If Pest Control: "(jaise ki bedbugs ya termites?)".
+        Generate a warm, natural closing message in casual Hinglish that:
+        1. Thanks the user briefly for sharing details.
+        2. Tells them our team will reach out to them shortly to take it forward.
+        3. Politely ask if it's okay to close the chat now, OR if they have any final question.
+        4. Keep it short — 2-3 sentences max.
+        5. Use "tum", never "aap". No Devanagari. Sound human, not robotic.
         PROMPT;
 
-
-        $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 256);
+        $reply = $this->callLLM($prompt, '', [], false, 0.7, 256);
 
         return [
             'status' => true,
-            'data' => [
-                'reply' => $reply ?: 'Achha thik hai, koi aur kaam ho toh batana.',
+            'data'   => [
+                'reply'       => $reply ?: 'Shukriya! Hamari team jald hi tumse contact karegi. Kya chat band kar sakte hain?',
+                'chat_status' => 'closing'
             ],
             'code' => 200,
         ];
@@ -278,22 +296,44 @@ trait ChatMethodHandler
 
     public function handleFallback(string $message, array $chat = [])
     {
+
         $niche = $this->businessContext['backendData']['niche'] ?? 'general';
         $bio = $this->businessContext['backendData']['bio'] ?? '';
         $services = $this->businessContext['backendData']['services'] ?? [];
         $servicesText = empty($services) ? 'None' : implode(', ', $services);
+        
+        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? 'None';
+        $attributes = $this->businessContext['backendData']['attributes'] ?? [];
+        $attributesText = empty($attributes) ? 'None' : implode(', ', $attributes);
+        
+        $collectedData = [];
+        if ($activeService !== 'None' && isset($this->chatContext['leadQualificationState'][$activeService]['data'])) {
+            $collectedData = $this->chatContext['leadQualificationState'][$activeService]['data'];
+        }
+        $collectedDataText = empty($collectedData) ? 'None' : json_encode($collectedData);
 
+        $pendingQuestions = $this->getPendingQuestions($this->chatContext, $this->businessContext);
+
+        // If nothing left to qualify, close the chat gracefully
+        if (empty($pendingQuestions)) {
+            return $this->handleClosing();
+        }
         $prompt = <<<PROMPT
-        You are a helpful AI assistant for a business. The user's latest message is slightly unclear or out of context. 
-        Read the chat history to understand the context.
+        You are a helpful AI assistant for a business. Read the chat history to understand the context.
 
         Business Niche: {$niche}
         Business BIO: {$bio}
         Available services: {$servicesText}
+        Current Active Service: {$activeService}
+        Service Attributes we can discuss: {$attributesText}
+        Already Collected Information: {$collectedDataText}
 
         INSTRUCTIONS:
-        - If the user's message is a follow-up or clarification about a service (e.g., "kya?", "price bata"), answer them naturally based on context, or politely ask them to clarify what they want to know.
-        - If the message is completely broken or makes no sense, politely say that you didn't catch that and ask them to repeat.
+        - If the user's message is a casual greeting (hello, hi) or out-of-context chit-chat, acknowledge it politely in 1 short sentence and immediately steer the conversation back to asking how you can help them with the active service.
+        - If the user's message is abusive, contains profanity, or is complete nonsense, politely but firmly tell them to keep it professional and ask how you can help them with the business.
+        - If the user simply states they want a service without asking a specific question: DO NOT ask multiple questions. Pick ONE question from this exact list of pending items: [{$pendingQuestions}] and ask it naturally. Do NOT invent your own questions.
+        - If the user asks a specific question about the business/service and the answer is not in your Business BIO, DO NOT guess or ask unrelated questions. Simply state that you don't have the exact details right now and politely ask for their phone number so the team can contact them with the information.
+        - Do not ask the user for information that is already listed in "Already Collected Information".
         - ALWAYS respond in casual Hinglish. Use "tum", never "aap". No Devanagari.
         - Do not act like a robot.
         - Do not use markdown or lists. Keep it short (1-2 sentences).
@@ -313,114 +353,142 @@ trait ChatMethodHandler
         ];
     }
 
-    public function handleUserRequestInfo(string $message, array $chat = [])
+    public function handleUserRequestInfo(string $message, array $chat = [], array $intent = [])
     {
-        $businessId = $this->businessId ?? null;
+        $businessId    = $this->businessId ?? null;
         $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
-        $services = $this->businessContext['backendData']['services'] ?? [];
-        $attributes = $this->businessContext['backendData']['attributes'] ?? [];
-        $bio = $this->businessContext['backendData']['bio'] ?? '';
-        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
+        $services      = $this->businessContext['backendData']['services'] ?? [];
+        $attributes    = $this->businessContext['backendData']['attributes'] ?? [];
+        $bio           = $this->businessContext['backendData']['bio'] ?? '';
+        $niche         = $this->businessContext['backendData']['niche'] ?? 'general';
 
         // 1. If no active service, ask the user to pick one
         if (!$activeService) {
             $servicesText = empty($services) ? 'None' : implode(', ', $services);
             $prompt = <<<PROMPT
-            The user is asking a question or making a request, but we don't know which service they want.
+            The user is asking a question but we don't know which service they want.
             Available services: {$servicesText}
-            
-            - Ask them politely and naturally in casual Hinglish which service they are interested in.
-            - Do NOT list all the services. Just ask them what they need help with.
-            - ALWAYS use "tum", never "aap".
-            - NEVER output Devanagari script.
+            Ask them politely in casual Hinglish which service they need help with.
+            Do NOT list all services. Use "tum", never "aap". No Devanagari.
             PROMPT;
-            
             $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 128);
             return ['status' => true, 'data' => ['reply' => $reply]];
         }
 
-        // 2. Identify the attribute for the active service
-        $attributesJson = json_encode($attributes);
-        $prompt = <<<PROMPT
-        Identify the specific attribute the user is asking about for the service '{$activeService}'.
+        // Handle topic change — user switched to a new service
+        if (($intent['topicChange'] ?? false) === true) {
+            $qualQuery = $this->generateQualifyingQuery([
+                'chatContext'     => $this->chatContext,
+                'businessContext' => $this->businessContext
+            ]);
+            if ($qualQuery) {
+                return ['status' => true, 'data' => ['reply' => "Bohot badhiya! " . $qualQuery], 'code' => 200];
+            }
+        }
 
-        Available Attributes:
-        {$attributesJson}
+        // 2. Fetch ONLY attributes that have actual DB data for this service (ground truth)
+        $availableAttributes = [];
+        if ($businessId) {
+            $availableAttributes = \DB::table('ai_contexts')
+                ->where('business_id', $businessId)
+                ->where('service_name', $activeService)
+                ->pluck('attribute_definition')
+                ->toArray();
+        }
 
-        RULES:
-        - Attribute MUST exactly match an Available Attribute, otherwise null.
-        - Use chat history to understand context (e.g., "iska price", "ye kitne ka hai" -> Price).
-        - Return ONLY valid JSON.
+        // 3. Single LLM call: identify attribute AND whether we have data for it
+        $attributesJson  = json_encode($attributes);
+        $availableJson   = json_encode($availableAttributes);
 
-        JSON:
+        $identPrompt = <<<PROMPT
+        User's message: "{$message}"
+        Service: {$activeService}
+
+        All business attributes (for identification): {$attributesJson}
+        Attributes we ACTUALLY have database data for: {$availableJson}
+
+        Task:
+        1. "asked_attribute": Which attribute from "All business attributes" is the user asking about? Use chat history for context. Return null if not asking about any specific attribute (e.g., casual chat, greetings).
+        2. "has_data": Is "asked_attribute" present in "Attributes we ACTUALLY have database data for"? true/false.
+
+        Return ONLY valid JSON:
         {
-            "attribute": "Attribute Name" | null
+            "asked_attribute": string | null,
+            "has_data": boolean
         }
         PROMPT;
 
-        $identification = $this->callLLM($prompt, $message, $chat, true, 0.1, 128);
-        $attribute = $identification['attribute'] ?? null;
+        $identification = $this->callLLM($identPrompt, $message, $chat, true, 0.1, 128);
+        $attribute      = $identification['asked_attribute'] ?? null;
+        $hasData        = $identification['has_data'] ?? false;
 
-        // 3. If no attribute identified, use handleFallback to answer clarifications fast using chat history
+        // 4. No clear attribute → route to fallback (casual/general message)
         if (!$attribute || !in_array($attribute, $attributes)) {
             return $this->handleFallback($message, $chat);
         }
 
-        // 4. Fetch info from DB
-        if ($businessId) {
-            $information = \DB::table('ai_contexts')
-                ->where('business_id', $businessId)
-                ->where('service_name', $activeService)
-                ->where('attribute_definition', $attribute)
-                ->first();
+        // 5. Attribute identified but NO DATA in DB
+        if (!$hasData) {
+            $availableText = empty($availableAttributes)
+                ? 'abhi koi bhi topic'
+                : implode(', ', $availableAttributes);
 
-            if (!$information) {
-                // FALLBACK: If exact attribute not found, fetch all available data for this service
-                $allInformation = \DB::table('ai_contexts')
-                    ->where('business_id', $businessId)
-                    ->where('service_name', $activeService)
-                    ->get();
-                    
-                if ($allInformation->isNotEmpty()) {
-                    $contextText = $allInformation->pluck('context')->implode("\n");
-                    $instruction = $allInformation->pluck('prompt')->implode("\n");
-                } else {
-                    return [
-                        'status' => true, 
-                        'data' => ['reply' => "Sorry, mere paas abhi {$activeService} ke baare mein exact details nahi hain. Tumhe aur kuch help chahiye thi?"]
-                    ];
-                }
-            } else {
-                $contextText = $information->context ?? '';
-                $instruction = $information->prompt ?? '';
-            }
-        } else {
-            return [
-                'status' => true, 
-                'data' => ['reply' => "Sorry, mere paas abhi {$activeService} ke baare mein exact details nahi hain. Tumhe aur kuch help chahiye thi?"]
-            ];
+            $noDataPrompt = <<<PROMPT
+            The user asked about: {$attribute} for {$activeService}.
+            We do NOT have this specific information in our system right now.
+            We DO have data for these topics: {$availableText}.
+            Business BIO: {$bio}
+
+            Generate a short, honest, helpful response in casual Hinglish that:
+            1. Clearly says in ONE sentence we don't have "{$attribute}" details right now.
+            2. Naturally offers to help with 1-2 things we DO have (from the available list).
+            3. Do NOT say "database", "context", or "AI". Sound natural.
+            4. Use "tum", never "aap". No Devanagari. Keep it to 2 sentences max.
+            PROMPT;
+
+            $reply = $this->callLLM($noDataPrompt, '', [], false, 0.7, 256);
+            return ['status' => true, 'data' => ['reply' => $reply]];
         }
 
-        // 5. Generate final answer
-        $shouldAskQuery = \Illuminate\Support\Facades\Cache::pull('disable_query_' . request()->ip(), true);
+        // 6. Attribute found AND has DB data — fetch context and answer
+        $information = \DB::table('ai_contexts')
+            ->where('business_id', $businessId)
+            ->where('service_name', $activeService)
+            ->where('attribute_definition', $attribute)
+            ->first();
 
-        if ($shouldAskQuery === false) {
-            $questionRule = "- IMPORTANT: DO NOT ask any follow-up questions at the end of your response. Just provide the answer and stop naturally.";
+        if (!$information) {
+            // Shouldn't normally happen since has_data is true, but safety net
+            return ['status' => true, 'data' => ['reply' => "Sorry, abhi mere paas iski exact jaankari nahi hai. Kya tum apna phone number de sakte ho?"]];
+        }
+
+        $contextText = $information->context ?? '';
+        $instruction = $information->prompt ?? '';
+
+        // 7. Generate final answer
+        $shouldAskQuery   = \Illuminate\Support\Facades\Cache::pull('disable_query_' . request()->ip(), true);
+        $pendingQuestions = $this->getPendingQuestions($this->chatContext, $this->businessContext);
+
+        if ($shouldAskQuery === false || empty($pendingQuestions)) {
+            $questionRule = "- IMPORTANT: DO NOT ask any follow-up questions. Just answer and stop naturally.";
         } else {
             $questionRule = <<<RULE
-        - After answering, ask ONE short relevant question to understand what the user needs next.
-        - IMPORTANT: Whenever you ask this question, ALWAYS give a very small, natural example in brackets based on the Business Niche ({$niche}) so the user knows exactly how to answer.
-        - For instance, if Interior: "(jaise ki L-shape ya U-shape?)". If Dentist: "(jaise ki root canal ya cleaning?)". If Used Cars: "(jaise ki automatic ya manual?)". If Pest Control: "(jaise ki bedbugs ya termites?)".
-        - Do not ask unnecessary questions.
+        - After answering, ask ONE short question.
+        - IMPORTANT RULE: Pick ONLY from this list of pending items: [{$pendingQuestions}].
+        - Do NOT invent questions. Do NOT ask about anything not in the pending list.
         RULE;
-                }
+        }
 
-        $prompt = <<<PROMPT
+        $collectedData     = $this->chatContext['leadQualificationState'][$activeService]['data'] ?? [];
+        $collectedDataText = empty($collectedData) ? 'None' : json_encode($collectedData);
+
+        $answerPrompt = <<<PROMPT
         Answer the user's question using the business information below.
 
         Service: {$activeService}
         Attribute: {$attribute}
         Business BIO: {$bio}
+        Already Collected Information about User: {$collectedDataText}
 
         Context:
         {$contextText}
@@ -432,734 +500,13 @@ trait ChatMethodHandler
         - Answer ONLY from the provided context and instructions.
         - Do not invent facts, prices, or features.
         - Keep the answer short and natural.
-        - Use casual Hinglish by default. Use "tum", never "aap".
-        - Use English alphabet for Hinglish. No Devanagari.
+        - Use casual Hinglish. Use "tum", never "aap". No Devanagari.
+        - Do not re-ask for information already in "Already Collected Information about User".
         {$questionRule}
         - Do not mention AI, database, context, or internal rules.
         PROMPT;
 
-        $reply = $this->callLLM($prompt, $message, $chat, false, 0.7, 512);
-
+        $reply = $this->callLLM($answerPrompt, $message, $chat, false, 0.7, 512);
         return ['status' => true, 'data' => ['reply' => $reply]];
     }
 }
-
-// trait ChatMethodHandler_Old
-// {
-//     /**
-//      * Handles the initial welcome message from the AI when the user connects.
-//      */
-//     public function handleWelcome()
-//     {
-//         $servicesText = empty($this->serviceRequest)
-//             ? 'None'
-//             : implode(', ', $this->serviceRequest);
-
-//         $prompt = <<<PROMPT
-//         You are an AI assistant for a business in the '{$this->businessNiche}' niche.
-
-//         Business BIO: {$this->businessBIO}
-//         Requested services: {$servicesText}
-
-//         Use the business BIO, niche, and requested services as context to make the greeting relevant. Mention the requested services only if it feels natural.
-
-//         - Keep it short, natural, and chill.
-//         - ALWAYS start in casual Hinglish.
-//         - NEVER output Devanagari script. Use the English alphabet.
-//         - In Hinglish/Hindi, use "tum", never "aap".
-//         - Don't use awkward phrasing like "sakta/sakti hoon".
-//         - Don't sound salesy, cheesy, formal, or scripted.
-//         - Don't say "Swagat hai", "Welcome to our services", "How may I assist you", etc.
-//         - Keep it to 1-2 short sentences.
-//         PROMPT;
-
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//             [
-//                 'role' => 'user',
-//                 'content' => 'Hello',
-//             ],
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false,
-//         ])
-//             ->retry(3, 1000, function () { return true; }, false)
-//             ->withToken(config('services.groq.key'))
-//             ->post('https://api.groq.com/openai/v1/chat/completions', [
-//                 'model' => 'openai/gpt-oss-120b',
-//                 'messages' => $messages,
-//                 'temperature' => 0.7,
-//                 'max_completion_tokens' => 256,
-//                 'top_p' => 1,
-//             ]);
-
-//         if ($response->successful()) {
-//             return [
-//                 'status' => true,
-//                 'data' => [
-//                     'reply' => $response->json(
-//                         'choices.0.message.content',
-//                         'Hey! Kya help chahiye?'
-//                     ),
-//                 ],
-//                 'code' => 200,
-//             ];
-//         }
-
-//         return [
-//             'status' => false,
-//             'message' => 'Failed to generate welcome message',
-//             'code' => 500,
-//         ];
-//     }
-
-//     private function checkIntent(string $message, array $chat = [])
-//     {
-//         $prompt = <<<PROMPT
-//             Classify the user's latest message.
-
-//             Return JSON only:
-
-//             {
-//             "userRequestInfo": boolean,
-//             "casualChat": boolean,
-//             "abusiveOrStupid": boolean
-//             }
-
-//             - userRequestInfo = true ONLY for a specific question or information request related to the '{$this->businessNiche}' niche or services.
-//             - abusiveOrStupid = true ONLY if the message is explicitly abusive, offensive, highly inappropriate, or completely nonsensical gibberish meant to troll.
-//             - casualChat = true for anything else (casual talk, greetings, jokes, or unrelated topics that are NOT abusive or trolling).
-
-//             CRITICAL RULES:
-//             - Exactly ONE of them MUST be true.
-//             - If you are unsure, default to casualChat = true.
-//             - DO NOT wrap the response in markdown blocks like ```json
-//             PROMPT;
-
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//         ];
-
-//         foreach ($chat as $msg) {
-//             $messages[] = [
-//                 'role' => $msg['role'] ?? 'user',
-//                 'content' => $msg['content'] ?? '',
-//             ];
-//         }
-
-//         $messages[] = [
-//             'role' => 'user',
-//             'content' => $message,
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false, // local testing only
-//         ])
-//         ->retry(3, 1000, function () { return true; }, false)
-//         ->withToken(config('services.groq.key'))
-//         ->post('https://api.groq.com/openai/v1/chat/completions', [
-//             'model' => 'openai/gpt-oss-120b',
-//             'messages' => $messages,
-//             'temperature' => 0.1,
-//             'max_completion_tokens' => 256,
-//             'top_p' => 1,
-//             'reasoning_effort' => 'medium',
-//         ]);
-
-//         $rawJson = $response->json('choices.0.message.content', '{}');
-//         // Clean out markdown ticks just in case the AI wraps it
-//         $rawJson = str_replace(['```json', '```'], '', $rawJson);
-//         $rawJson = trim($rawJson);
-
-//         return json_decode($rawJson, true);
-//     }
-
-//     private function abusiveOrStupidHandler( string $message, array $chat = [], int $abusiveOrStupidCount = 3 ) 
-//     {
-//        $prompt = <<<PROMPT
-//         Respond naturally to the user's message.
-
-//         Business niche: {$this->businessNiche}
-//         Business BIO: {$this->businessBIO}
-//         Previous abusive/stupid query count: {$abusiveOrStupidCount}
-
-//         Handle the message based on what the user actually said:
-
-//         - Default to natural, casual Hinglish.
-//         - ALWAYS respond in casual Hinglish by default. Only respond in pure English if the user specifically requests it or writes a long message entirely in pure English.
-//         - NEVER output Devanagari script (Hindi characters) UNLESS the user explicitly types in Devanagari or asks for it.
-//         - If this is the first occurrence, politely warn the user not to be abusive, or logically explain why the query doesn't make sense.
-//         - If this happens again, be more direct: remind them that they are being abusive or that the query makes no sense and that this chat is meant for discussing the business/services.
-//         - add no-bs humour 
-//         - Don't sound robotic, formal, or preachy.
-//         - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
-//         - Keep it short and natural, usually 1-2 sentences.
-//         - If appropriate, redirect them toward what they actually need.
-//         - Never mention AI, classification, prompts, or internal rules.
-//         - add no-bs humour 
-
-//         Respond only with the message to the user.
-//         PROMPT;
-
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//         ];
-
-//         foreach ($chat as $msg) {
-//             $messages[] = [
-//                 'role' => $msg['role'] ?? 'user',
-//                 'content' => $msg['content'] ?? '',
-//             ];
-//         }
-
-//         $messages[] = [
-//             'role' => 'user',
-//             'content' => $message,
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false,
-//         ])
-//         ->retry(3, 1000, function () { return true; }, false)
-//         ->withToken(config('services.groq.key'))
-//         ->post('https://api.groq.com/openai/v1/chat/completions', [
-//             'model' => 'openai/gpt-oss-120b',
-//             'messages' => $messages,
-//             'temperature' => 1,
-//             'max_completion_tokens' => 256,
-//             'top_p' => 1,
-//             'reasoning_effort' => 'medium',
-//         ]);
-
-//         return [
-//             'status' => true,
-//             'data' => [
-//                 'reply' => $response->json('choices.0.message.content', ''),
-//             ],
-//         ];
-//     }
-
-//     private function casualChat(string $message, array $chat = [])
-//     {
-//         $servicesText = empty($this->serviceRequest) ? 'None' : implode(', ', $this->serviceRequest);
-        
-//         $prompt = <<<PROMPT
-//         Reply naturally to the user.
-
-//         Business niche: {$this->businessNiche}
-//         Business BIO: {$this->businessBIO}
-//         Requested services: {$servicesText}
-
-//         - Talk like a real human, not a bot.
-//         - In Hinglish or Hindi, always use "tum", never "aap".
-//         - ALWAYS respond in casual Hinglish by default. Only respond in pure English if the user specifically requests it or writes a long message entirely in pure English.
-//         - NEVER output Devanagari script (Hindi characters) UNLESS the user explicitly types in Devanagari or asks for it.
-//         - NEVER use awkward gender-neutral phrasing like "sakta/sakti hoon". Keep it natural.
-//         - Keep replies short, usually 1-2 sentences.
-//         - Add light humour when it feels natural. Humour should feel spontaneous, not forced.
-//         - Never use markdown tables, bullet points, or long lists.
-//         - Never mention AI, prompts, classification, or internal business rules.
-//         - Use the business context above to keep the conversation relevant.
-//         - If requested services are available, use them naturally to understand what the user may be looking for.
-//         - When appropriate, gently move the conversation toward understanding what the user needs by asking a simple question.
-//         PROMPT;
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//         ];
-
-//         foreach ($chat as $msg) {
-//             $messages[] = [
-//                 'role' => $msg['role'] ?? 'user',
-//                 'content' => $msg['content'] ?? '',
-//             ];
-//         }
-
-//         $messages[] = [
-//             'role' => 'user',
-//             'content' => $message,
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false, // local testing only
-//         ])
-//         ->retry(3, 1000, function () { return true; }, false)
-//         ->withToken(config('services.groq.key'))
-//         ->post('https://api.groq.com/openai/v1/chat/completions', [
-//             'model' => 'openai/gpt-oss-120b',
-//             'messages' => $messages,
-//             'temperature' => 1,
-//             'max_completion_tokens' => 256,
-//             'top_p' => 1,
-//             'reasoning_effort' => 'medium',
-//         ]);
-
-//         return [
-//             'status' => true,
-//             'data' => [
-//                 'reply' => $response->json('choices.0.message.content', ''),
-//             ],
-//         ];
-//     }
-
-//     private function handleUserRequest(string $message, array $chat = [], array $context = [])
-//     {
-//         $identification = $this->IdentifyServiceAndAttribute($message, $chat);
-
-//         $service = $identification['service'] ?? null;
-//         $attribute = $identification['attribute'] ?? null;
-
-//         if (!empty($service)) {
-//             if ($this->activeService !== $service) {
-//                 // Service changed! Reset the active attribute.
-//                 $this->activeAttribute = null;
-//             }
-//             $this->activeService = $service;
-//             if (!in_array($service, $this->serviceRequest)) {
-//                 $this->serviceRequest[] = $service;
-//             }
-//         }
-
-//         if (array_key_exists('attribute', $identification)) {
-//             $this->activeAttribute = $attribute;
-//         }
-
-//         if (!empty($this->activeAttribute)) {
-//             if (!in_array($this->activeAttribute, $this->attributeRequest)) {
-//                 $this->attributeRequest[] = $this->activeAttribute;
-//             }
-//         }
-
-//         // 1. If we still don't have an active service, ask for it!
-//         if (!$this->activeService) {
-//             return $this->findProximityService($message, $chat);
-//         }
-
-//         // 2. If we have a service, but NO attribute, use proximity fallback
-//         if (!$this->activeAttribute) {
-//             $proximity = $this->findProximityAttribute($this->activeService, '', $message, $chat);
-            
-//             // If proximity failed to find a valid attribute, it must be a casual acknowledgment
-//             if (isset($proximity['status']) && $proximity['status'] === false) {
-//                  return $this->casualChat($message, $chat);
-//             }
-            
-//             return $proximity;
-//         }
-
-//         // 3. We have both activeService and activeAttribute! Fetch information.
-//         return $this->findInformation(
-//             $this->activeService,
-//             $this->activeAttribute,
-//             $message,
-//             $chat
-//         );
-//     }
-
-
-//     private function IdentifyServiceAndAttribute(string $message, array $chat = [])
-//     {
-//         $servicesJson = json_encode($this->businessServices);
-//         $attributesJson = json_encode($this->businessAttributes);
-//         $activeServiceJson = json_encode($this->activeService ?? 'None');
-//         $activeAttributeJson = json_encode($this->activeAttribute ?? 'None');
-
-//         $prompt = <<<PROMPT
-//         Identify the Service and Attribute from the user's message and chat history.
-
-//         Available Services:
-//         {$servicesJson}
-
-//         Available Attributes:
-//         {$attributesJson}
-
-//         Current Active Context in this conversation:
-//         - Active Service: {$activeServiceJson}
-//         - Active Attribute: {$activeAttributeJson}
-
-//         RULES:
-//         - Service MUST exactly match an Available Service, otherwise null.
-//         - Attribute MUST exactly match an Available Attribute, otherwise null.
-//         - If the user confirms or implies they want to continue talking about the Active Service or Active Attribute, you MUST select them.
-//         - Service and Attribute are independent.
-//         - NEVER infer an Attribute just because a Service was identified.
-//         - Only select a NEW Attribute when the user clearly asks about or refers to it.
-//         - Use chat history for references like "iska price", "ye kitne ka hai", or "isme kya included hai".
-//         - Return ONLY valid JSON.
-
-//         JSON:
-//         {
-//             "service": "Service Name" | null,
-//             "attribute": "Attribute Name" | null
-//         }
-//         PROMPT;
-
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//         ];
-
-//         foreach ($this->infoHistory as $msg) {
-//             $messages[] = [
-//                 'role' => $msg['role'] ?? 'user',
-//                 'content' => $msg['content'] ?? '',
-//             ];
-//         }
-
-//         $messages[] = [
-//             'role' => 'user',
-//             'content' => $message,
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false,
-//         ])
-//         ->retry(3, 1000, function () { return true; }, false)
-//         ->withToken(config('services.groq.key'))
-//         ->post('https://api.groq.com/openai/v1/chat/completions', [
-//             'model' => 'openai/gpt-oss-120b',
-//             'messages' => $messages,
-//             'temperature' => 0.1,
-//             'max_completion_tokens' => 256,
-//             'top_p' => 1,
-//             'reasoning_effort' => 'low',
-//             'response_format' => [
-//                 'type' => 'json_object',
-//             ],
-//         ]);
-
-//         $rawJson = $response->json(
-//             'choices.0.message.content',
-//             '{}'
-//         );
-
-//         $rawJson = trim(
-//             str_replace(
-//                 ['```json', '```'],
-//                 '',
-//                 $rawJson
-//             )
-//         );
-
-//         return json_decode($rawJson, true) ?? [];
-//     }
-
-
-//     private function findInformation( string $service, string $attribute, string $message,
-//         array $chat = []) 
-//     {
-//         $information = \DB::table('ai_contexts')
-//             ->where('business_id', $this->businessId)
-//             ->where('service_name', $service)
-//             ->where('attribute_definition', $attribute)
-//             ->first();
-
-//         if (!$information) {
-//             return $this->findProximityAttribute($service, $attribute, $message, $chat);
-//         }
-
-//         $contextText = $information->context ?? '';
-//         $instruction = $information->prompt ?? '';
-
-//         $prompt = <<<PROMPT
-//         Answer the user's question using the business information below.
-
-//         Service: {$service}
-//         Attribute: {$attribute}
-
-//         Business BIO:
-//         {$this->businessBIO}
-
-//         Context:
-//         {$contextText}
-
-//         Instructions:
-//         {$instruction}
-
-//         RULES:
-//         - Answer only from the provided context and instructions.
-//         - Do not invent prices, features, services, or facts.
-//         - Keep the answer short and natural.
-//         - Use casual Hinglish by default.
-//         - Use "tum", never "aap".
-//         - Use English alphabet for Hinglish.
-//         - Match the user's language if they explicitly use another language.
-//         - After answering, ask ONE short relevant question to understand what the user needs next.
-//         - Do not ask unnecessary questions.
-//         - No markdown tables or long lists.
-//         - Do not mention AI, prompts, context, database, or internal rules.
-//         PROMPT;
-
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//         ];
-
-//         foreach ($this->infoHistory as $msg) {
-//             $messages[] = [
-//                 'role' => $msg['role'] ?? 'user',
-//                 'content' => $msg['content'] ?? '',
-//             ];
-//         }
-
-//         $messages[] = [
-//             'role' => 'user',
-//             'content' => $message,
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false,
-//         ])
-//         ->retry(3, 1000, function () { return true; }, false)
-//         ->withToken(config('services.groq.key'))
-//         ->post('https://api.groq.com/openai/v1/chat/completions', [
-//             'model' => 'openai/gpt-oss-120b',
-//             'messages' => $messages,
-//             'temperature' => 0.7,
-//             'max_completion_tokens' => 512,
-//             'top_p' => 1,
-//             'reasoning_effort' => 'medium',
-//         ]);
-
-//         return [
-//             'status' => true,
-//             'needs_clarification' => false,
-//             'data' => [
-//                 'reply' => $response->json(
-//                     'choices.0.message.content',
-//                     'Sorry, information is not available right now.'
-//                 ),
-//             ],
-//             'code' => 200,
-//         ];
-//     }
-
-//     private function findProximityAttribute(
-//     string $service,
-//     string $attribute,
-//     string $message,
-//     array $chat = []
-//     ) {
-//     $availableInformation = \DB::table('ai_contexts')
-//         ->where('business_id', $this->businessId)
-//         ->where('service_name', $service)
-//         ->get([
-//             'attribute_definition',
-//             'context',
-//             'prompt',
-//         ]);
-
-//     if ($availableInformation->isEmpty()) {
-//         return [
-//             'status' => true,
-//             'data' => [
-//                 'reply' => "Mere paas iske baare mein exact information nahi hai. Tum kya specifically jaan-na chahte ho?",
-//             ],
-//         ];
-//     }
-
-//     $attributes = $availableInformation
-//         ->pluck('attribute_definition')
-//         ->values()
-//         ->toArray();
-
-//     $attributesJson = json_encode($attributes);
-
-//     $prompt = <<<PROMPT
-//     Find the closest relevant attribute for the user's question.
-
-//     Service: {$service}
-//     User question: {$message}
-
-//     Available attributes:
-//     {$attributesJson}
-
-//     RULES:
-//     - Pick ONE attribute only if it is clearly related to the user's question.
-//     - Do NOT infer an attribute just because it belongs to the same service.
-//     - Do NOT invent or modify attribute names.
-//     - If no attribute is clearly relevant, return null.
-//     - Return ONLY valid JSON.
-
-//     JSON:
-//     {
-//         "attribute": "Attribute Name" | null
-//     }
-//     PROMPT;
-    
-//     $messages = [
-//         [
-//             'role' => 'system',
-//             'content' => $prompt,
-//         ],
-//     ];
-
-//     foreach ($this->infoHistory as $msg) {
-//         $messages[] = [
-//             'role' => $msg['role'] ?? 'user',
-//             'content' => $msg['content'] ?? '',
-//         ];
-//     }
-
-//     $messages[] = [
-//         'role' => 'user',
-//         'content' => $message,
-//     ];
-
-//     $response = Http::withOptions([
-//         'verify' => false,
-//     ])
-//     ->retry(3, 1000, function () { return true; }, false)
-//     ->withToken(config('services.groq.key'))
-//     ->post('https://api.groq.com/openai/v1/chat/completions', [
-//         'model' => 'openai/gpt-oss-120b',
-//         'messages' => $messages,
-//         'temperature' => 0.1,
-//         'max_completion_tokens' => 128,
-//         'top_p' => 1,
-//         'reasoning_effort' => 'low',
-//         'response_format' => [
-//             'type' => 'json_object',
-//         ],
-//     ]);
-
-//     $result = json_decode(
-//         $response->json('choices.0.message.content', '{}'),
-//         true
-//     ) ?? [];
-
-//     $nearbyAttribute = $result['attribute'] ?? null;
-
-//     if (!$nearbyAttribute) {
-//         return [
-//             'status' => false,
-//             'data' => [
-//                 'reply' => "Mere paas iske baare mein exact information nahi hai. Tum kya specifically jaan-na chahte ho?",
-//             ],
-//         ];
-//     }
-
-//     $exists = $availableInformation->firstWhere(
-//         'attribute_definition',
-//         $nearbyAttribute
-//     );
-
-//     if (!$exists) {
-//         return [
-//             'status' => false,
-//             'data' => [
-//                 'reply' => "Mere paas iske baare mein exact information nahi hai. Tum kya specifically jaan-na chahte ho?",
-//             ],
-//         ];
-//     }
-
-//     // Store temporarily until the user confirms
-//     $this->pendingProximityAttribute = $nearbyAttribute;
-
-//     return [
-//         'status' => true,
-//         'data' => [
-//             'reply' => "Tum {$nearbyAttribute} ke baare mein pooch rahe ho?",
-//         ],
-//     ];
-//     }
-
-//     private function findProximityService(string $message, array $chat = [])
-//     {
-//         $servicesJson = json_encode($this->businessServices);
-
-//         $prompt = <<<PROMPT
-//         Find the closest relevant service for the user's question.
-
-//         User question: {$message}
-
-//         Available services:
-//         {$servicesJson}
-
-//         RULES:
-//         - Pick ONE service only if it is clearly related to the user's question or the conversation context.
-//         - If no service is clearly relevant, return null.
-//         - Return ONLY valid JSON.
-
-//         JSON:
-//         {
-//             "service": "Service Name" | null
-//         }
-//         PROMPT;
-        
-//         $messages = [
-//             [
-//                 'role' => 'system',
-//                 'content' => $prompt,
-//             ],
-//         ];
-
-//         foreach ($this->infoHistory as $msg) {
-//             $messages[] = [
-//                 'role' => $msg['role'] ?? 'user',
-//                 'content' => $msg['content'] ?? '',
-//             ];
-//         }
-
-//         $messages[] = [
-//             'role' => 'user',
-//             'content' => $message,
-//         ];
-
-//         $response = Http::withOptions([
-//             'verify' => false,
-//         ])
-//         ->retry(3, 1000, function () { return true; }, false)
-//         ->withToken(config('services.groq.key'))
-//         ->post('https://api.groq.com/openai/v1/chat/completions', [
-//             'model' => 'openai/gpt-oss-120b',
-//             'messages' => $messages,
-//             'temperature' => 0.1,
-//             'max_completion_tokens' => 128,
-//             'top_p' => 1,
-//             'reasoning_effort' => 'low',
-//             'response_format' => [
-//                 'type' => 'json_object',
-//             ],
-//         ]);
-
-//         $result = json_decode(
-//             $response->json('choices.0.message.content', '{}'),
-//             true
-//         ) ?? [];
-
-//         $nearbyService = $result['service'] ?? null;
-
-//         if (!$nearbyService || !in_array($nearbyService, $this->businessServices)) {
-//             return [
-//                 'status' => true,
-//                 'data' => [
-//                     'reply' => "Mere paas iske baare mein exact information nahi hai. Tum specifically kis service ke baare mein jaan-na chahte ho?",
-//                 ],
-//             ];
-//         }
-
-//         return [
-//             'status' => true,
-//             'data' => [
-//                 'reply' => "Tum {$nearbyService} ki baat kar rahe ho?",
-//             ],
-//         ];
-//     }
-// }

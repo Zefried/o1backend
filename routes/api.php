@@ -28,6 +28,7 @@ Route::post('/logout', [AuthController::class, 'logout'])
 
 Route::post('/public/chat', [ChatController::class, 'publicChat']);
 Route::post('/public/eye-on-responses', [ChatController::class, 'publicEyeOnResponses']);
+Route::post('/public/extract-lead-data', [ChatController::class, 'extractLeadData']);
 
 Route::prefix('admin')
     ->middleware(['auth:sanctum', CheckAdmin::class])
