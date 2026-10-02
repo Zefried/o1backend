@@ -254,7 +254,7 @@ trait ChatMethodHandler
         ];
     }
 
-    public function handleClosing()
+    public function handleClosing(string $message = '', array $chat = [])
     {
         $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
         $bio           = $this->businessContext['backendData']['bio'] ?? '';
@@ -273,16 +273,28 @@ trait ChatMethodHandler
         Collected Information: {$summary}
         Business BIO: {$bio}
         Service: {$activeService}
+        
+        User's latest message: "{$message}"
 
-        Generate a warm, natural closing message in casual Hinglish that:
-        1. Thanks the user briefly for sharing details.
-        2. Tells them our team will reach out to them shortly to take it forward.
-        3. Politely ask if it's okay to close the chat now, OR if they have any final question.
-        4. Keep it short — 2-3 sentences max.
-        5. Use "tum", never "aap". No Devanagari. Sound human, not robotic.
+        Task:
+        Analyze the user's latest message and the chat history. Check if the user is agreeing to close the chat or saying goodbye (e.g., saying "kardo", "close", "yes", "bye", "ok", "thik hai").
+        
+        If the user IS agreeing to close or saying goodbye:
+        - Generate a final, short 1-sentence goodbye message (e.g., "Okay, take care! Hum jald hi contact karenge."). 
+        - DO NOT ask if it's okay to close. DO NOT ask any more questions.
+
+        If the user is NOT explicitly closing yet (or if this is the very first time we are wrapping up):
+        - Generate a warm closing message in casual Hinglish that:
+          1. Thanks the user briefly for sharing details.
+          2. Tells them our team will reach out to them shortly.
+          3. Politely asks if it's okay to close the chat now, OR if they have any final question.
+        
+        RULES:
+        - Keep it short — 2-3 sentences max.
+        - Use "tum", never "aap". No Devanagari. Sound human, not robotic.
         PROMPT;
 
-        $reply = $this->callLLM($prompt, '', [], false, 0.7, 256);
+        $reply = $this->callLLM($prompt, '', $chat, false, 0.7, 256);
 
         return [
             'status' => true,
@@ -316,7 +328,7 @@ trait ChatMethodHandler
 
         // If nothing left to qualify, close the chat gracefully
         if (empty($pendingQuestions)) {
-            return $this->handleClosing();
+            return $this->handleClosing($message, $chat);
         }
         $prompt = <<<PROMPT
         You are a helpful AI assistant for a business. Read the chat history to understand the context.
