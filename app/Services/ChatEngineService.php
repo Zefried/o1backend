@@ -67,8 +67,8 @@ class ChatEngineService
                 if (isset($result['data']['reply'])) {
                     $this->chatContext['abusiveChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
                 }
-                if (count($this->chatContext['abusiveChatHistory']) > 6) {
-                    $this->chatContext['abusiveChatHistory'] = array_slice($this->chatContext['abusiveChatHistory'], -6);
+                if (count($this->chatContext['abusiveChatHistory']) > 8) {
+                    $this->chatContext['abusiveChatHistory'] = array_slice($this->chatContext['abusiveChatHistory'], -8);
                 }
 
             } elseif (($intent['casualChat'] ?? false) === true) {
@@ -79,8 +79,8 @@ class ChatEngineService
                 if (isset($result['data']['reply'])) {
                     $this->chatContext['casualChatHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
                 }
-                if (count($this->chatContext['casualChatHistory']) > 6) {
-                    $this->chatContext['casualChatHistory'] = array_slice($this->chatContext['casualChatHistory'], -6);
+                if (count($this->chatContext['casualChatHistory']) > 8) {
+                    $this->chatContext['casualChatHistory'] = array_slice($this->chatContext['casualChatHistory'], -8);
                 }
 
             } elseif (($intent['userRequestInfo'] ?? false) === true) {
@@ -91,8 +91,8 @@ class ChatEngineService
                 if (isset($result['data']['reply'])) {
                     $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
                 }
-                if (count($this->chatContext['infoHistory']) > 6) {
-                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -6);
+                if (count($this->chatContext['infoHistory']) > 8) {
+                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -8);
                 }
 
             } else {
@@ -103,8 +103,8 @@ class ChatEngineService
                 if (isset($result['data']['reply'])) {
                     $this->chatContext['infoHistory'][] = ['role' => 'assistant', 'content' => $result['data']['reply']];
                 }
-                if (count($this->chatContext['infoHistory']) > 6) {
-                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -6);
+                if (count($this->chatContext['infoHistory']) > 8) {
+                    $this->chatContext['infoHistory'] = array_slice($this->chatContext['infoHistory'], -8);
                 }
             }
         }
