@@ -42,9 +42,10 @@ trait LeadQualificationTraits
         User's Message: "{$message}"
         
         Task:
-        1. Extract any answers the user provided that match the fields in the Pending Questions list.
-        2. Use the exact field name from the list (e.g. "Running feet/layout", "Budget", "phonenumber").
-        3. If the user says they don't know or haven't decided, use "Not decided yet" as the value.
+        1. Extract ONLY the fields that the user has explicitly answered or directly addressed in the message.
+        2. DO NOT extract or assume values for any fields that the user has not mentioned.
+        3. Use the exact field name from the list (e.g. "Running feet/layout", "Budget", "phonenumber").
+        4. ONLY if the user explicitly says they don't know, haven't decided, or refuse to answer a specific thing, use "Not decided yet" for that specific field.
         
         Return ONLY valid JSON object:
         {

@@ -292,15 +292,15 @@ class ChatEngineService
 
         Task:
         1. Go through the chat history carefully.
-        2. For each pending question field, check if the user has provided an answer at any point.
-        3. If the user says they don't know, haven't decided, or denied/skipped — treat that as "Not decided yet".
-        4. Only extract fields that are in the Pending Questions list.
+        2. For each pending question field, check if the user has explicitly provided an answer at any point.
+        3. DO NOT extract or return fields that haven't been discussed yet.
+        4. ONLY if the user was asked about a field and they explicitly said they don't know, haven't decided, or denied/skipped — treat that as "Not decided yet" for that specific field.
+        5. Only extract fields that are in the Pending Questions list.
 
         Return ONLY valid JSON:
         {
             "extractions": [
-                {"field": "Budget", "value": "80k"},
-                {"field": "Requirements", "value": "Not decided yet"}
+                {"field": "Budget", "value": "80k"}
             ]
         }
         If nothing found, return: {"extractions": []}
