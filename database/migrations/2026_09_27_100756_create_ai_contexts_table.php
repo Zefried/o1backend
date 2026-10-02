@@ -15,6 +15,7 @@ return new class extends Migration
             $table->string('attribute_definition')->index();
             $table->text('context');
             $table->text('prompt');
+            $table->json('media_resources')->nullable();
             $table->timestamps();
         });
     }

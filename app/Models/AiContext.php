@@ -17,5 +17,15 @@ class AiContext extends Model
         'attribute_definition',
         'context',
         'prompt',
+        'media_resources',
     ];
+
+    protected $casts = [
+        'media_resources' => 'array',
+    ];
+
+    public function images()
+    {
+        return $this->morphMany(Image::class, 'imageable');
+    }
 }

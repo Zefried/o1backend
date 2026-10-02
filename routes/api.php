@@ -9,6 +9,7 @@ use App\Http\Controllers\Admin\AttributeFieldController;
 use App\Http\Controllers\Admin\CategoryController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\Images\ImageController;
 use App\Http\Middleware\CheckAdmin;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -80,6 +81,10 @@ Route::prefix('admin')
         Route::put('/attribute-fields/{id}', [AttributeFieldController::class, 'update']);
         Route::patch('/attribute-fields/{id}/toggle', [AttributeFieldController::class, 'toggleStatus']);
         Route::delete('/attribute-fields/{id}', [AttributeFieldController::class, 'destroy']);
+
+        // ── Image routes ──────────────────────────
+        Route::get('/images', [ImageController::class, 'index']);
+        Route::post('/images', [ImageController::class, 'store']);
 
         // ── AI Context routes ─────────────────────
         Route::get('/ai-contexts', [AiContextController::class, 'index']);
