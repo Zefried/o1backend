@@ -102,5 +102,8 @@ class DatabaseSeeder extends Seeder
                 'status'      => 'active',
             ]);
         }
+
+        // 5. Seed Lead Qualifications
+        $this->call(LeadQualificationSeeder::class);
     }
 }

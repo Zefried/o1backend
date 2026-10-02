@@ -89,6 +89,7 @@ Route::prefix('admin')
         // ── AI Context routes ─────────────────────
         Route::get('/ai-contexts', [AiContextController::class, 'index']);
         Route::post('/ai-contexts', [AiContextController::class, 'store']);
+        Route::post('/ai-contexts/bulk-delete', [AiContextController::class, 'bulkDestroy']);
         Route::put('/ai-contexts/{id}', [AiContextController::class, 'update']);
         Route::delete('/ai-contexts/{id}', [AiContextController::class, 'destroy']);
 

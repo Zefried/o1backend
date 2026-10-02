@@ -146,4 +146,18 @@ class AiContextController extends Controller
 
         return response()->json(['status' => true, 'message' => 'Context deleted successfully', 'code' => 200], 200);
     }
+
+    /** POST /api/admin/ai-contexts/bulk-delete */
+    public function bulkDestroy(Request $request)
+    {
+        $ids = $request->input('ids', []);
+        
+        if (empty($ids) || !is_array($ids)) {
+            return response()->json(['status' => false, 'message' => 'No contexts selected for deletion', 'code' => 400], 400);
+        }
+
+        AiContext::whereIn('id', $ids)->delete();
+
+        return response()->json(['status' => true, 'message' => 'Selected contexts deleted successfully', 'code' => 200], 200);
+    }
 }
