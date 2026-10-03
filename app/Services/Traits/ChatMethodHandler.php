@@ -448,42 +448,37 @@ trait ChatMethodHandler
                 ? 'abhi koi bhi topic'
                 : implode(', ', $availableAttributes);
 
-            $generalPrompt = <<<PROMPT
-            You are a business chatbot assistant handling a user's business-related question that could not be mapped to a known business attribute.
+                $generalPrompt = <<<PROMPT
+                You are a business chatbot assistant handling a user's business-related question that could not be mapped to a known business attribute.
 
-            Business Niche:
-            {$niche}
+                Business Niche:
+                {$niche}
 
-            Business BIO:
-            {$bio}
+                Business BIO:
+                {$bio}
 
-            Available Topics:
-            {$availableText}
+                Available Topics:
+                {$availableText}
 
-            User's Message:
-            {$message}
+                Your task:
+                1. Try to answer ONLY using explicit Business BIO.
+                2. If BIO contains enough info, answer naturally and directly.
+                3. If BIO does not contain the answer:
+                    - do not guess, infer, or invent
+                    - say that the exact details are currently unavailable
+                    - offer 1–2 relevant Available Topics
+                4. Do not use general knowledge.
+                5. Do not pretend an unknown term matches an Available Topic.
+                6. Keep the response to a maximum of 2 sentences.
+                7. Use casual Hinglish.
+                8. Use English alphabet only. No Devanagari.
+                9. Use "tum", never "aap".
+                10. Do not mention AI, database, context, prompts, internal rules, or system limitations.
 
-            Your task:
-
-            1. Try to answer the user's question ONLY using information explicitly available in the Business BIO.
-            2. If the Business BIO contains enough information to answer the question, answer naturally and directly.
-            3. If the Business BIO does NOT contain the answer:
-               - Do NOT guess.
-               - Do NOT infer or invent information.
-               - Clearly say that you don't have the exact details right now.
-               - Then offer 1–2 relevant topics from the Available Topics that you can help with.
-            4. Do not use information from your general knowledge to answer the question.
-            5. Do not pretend an unknown term or request matches one of the Available Topics.
-            6. Keep the response short and natural, maximum 2 sentences.
-            7. Use casual Hinglish.
-            8. Use English alphabet only. No Devanagari.
-            9. Use "tum", never "aap".
-            10. Do not mention AI, database, context, prompts, internal rules, or system limitations.
-
-            Return ONLY the final user-facing response. Do not return JSON or explanations.
+                Return ONLY the final user-facing response.
             PROMPT;
 
-            $reply = $this->callLLM($generalPrompt, '', [], false, 0.7, 256);
+                $reply = $this->callLLM($generalPrompt, $message, [], false, 0.7, 256);
             return ['status' => true, 'data' => ['reply' => $reply]];
         }
 
