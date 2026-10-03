@@ -254,53 +254,29 @@ trait ChatMethodHandler
         ];
     }
 
+    /**
+     * Terminal closing handler — deterministic, zero LLM calls.
+     *
+     * The decision to close is made upstream:
+     *   - handleFallback() Step 1: no pending questions → qualification complete.
+     *   - handleFallback() Step 2: classifier routed an explicit farewell here.
+     *
+     * This method's only job is to return a final goodbye and set chat_status.
+     * It must NOT re-evaluate whether to close, ask new questions, or reopen the conversation.
+     *
+     * Params are kept for signature compatibility but are intentionally unused.
+     */
     public function handleClosing(string $message = '', array $chat = [])
     {
-        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
-        $bio           = $this->businessContext['backendData']['bio'] ?? '';
-
-        $collectedData = [];
-        if ($activeService && isset($this->chatContext['leadQualificationState'][$activeService]['data'])) {
-            $collectedData = $this->chatContext['leadQualificationState'][$activeService]['data'];
-        }
-        $globalData = $this->chatContext['leadQualificationState']['Global']['data'] ?? [];
-        $allData    = array_merge($collectedData, $globalData);
-        $summary    = empty($allData) ? 'None' : json_encode($allData);
-
-        $prompt = <<<PROMPT
-        The conversation is complete. We have collected all the information we need from the user.
-        
-        Collected Information: {$summary}
-        Business BIO: {$bio}
-        Service: {$activeService}
-        
-        User's latest message: "{$message}"
-
-        Task:
-        Analyze the user's latest message and the chat history. Check if the user is agreeing to close the chat or saying goodbye (e.g., saying "kardo", "close", "yes", "bye", "ok", "thik hai").
-        
-        If the user IS agreeing to close or saying goodbye:
-        - Generate a final, short 1-sentence goodbye message (e.g., "Okay, take care! Hum jald hi contact karenge."). 
-        - DO NOT ask if it's okay to close. DO NOT ask any more questions.
-
-        If the user is NOT explicitly closing yet (or if this is the very first time we are wrapping up):
-        - Generate a warm closing message in casual Hinglish that:
-          1. Thanks the user briefly for sharing details.
-          2. Tells them our team will reach out to them shortly.
-          3. Politely asks if it's okay to close the chat now, OR if they have any final question.
-        
-        RULES:
-        - Keep it short — 2-3 sentences max.
-        - Use "tum", never "aap". No Devanagari. Sound human, not robotic.
-        PROMPT;
-
-        $reply = $this->callLLM($prompt, '', $chat, false, 0.7, 256);
+        // Persist closing state into chatContext so it flows through context_state
+        // to the frontend and is available on the next request for re-entry detection.
+        $this->chatContext['chat_status'] = 'closing';
 
         return [
             'status' => true,
             'data'   => [
-                'reply'       => $reply ?: 'Shukriya! Hamari team jald hi tumse contact karegi. Kya chat band kar sakte hain?',
-                'chat_status' => 'closing'
+                'reply'       => 'Shukriya! Hamari team jald hi tumse contact karegi. 😊',
+                'chat_status' => 'closing',
             ],
             'code' => 200,
         ];
@@ -308,52 +284,84 @@ trait ChatMethodHandler
 
     public function handleFallback(string $message, array $chat = [])
     {
+        $niche          = $this->businessContext['backendData']['niche'] ?? 'general';
+        $services       = $this->businessContext['backendData']['services'] ?? [];
+        $servicesText   = empty($services) ? 'None' : implode(', ', $services);
+        $activeService  = $this->businessContext['backendData']['UserServiceDemand'] ?? 'None';
 
-        $niche = $this->businessContext['backendData']['niche'] ?? 'general';
-        $bio = $this->businessContext['backendData']['bio'] ?? '';
-        $services = $this->businessContext['backendData']['services'] ?? [];
-        $servicesText = empty($services) ? 'None' : implode(', ', $services);
-        
-        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? 'None';
-        $attributes = $this->businessContext['backendData']['attributes'] ?? [];
-        $attributesText = empty($attributes) ? 'None' : implode(', ', $attributes);
-        
-        $collectedData = [];
-        if ($activeService !== 'None' && isset($this->chatContext['leadQualificationState'][$activeService]['data'])) {
-            $collectedData = $this->chatContext['leadQualificationState'][$activeService]['data'];
-        }
-        $collectedDataText = empty($collectedData) ? 'None' : json_encode($collectedData);
-
+        // ── Step 1: No pending questions → qualification complete, close gracefully ──
         $pendingQuestions = $this->getPendingQuestions($this->chatContext, $this->businessContext);
 
-        // If nothing left to qualify, close the chat gracefully
         if (empty($pendingQuestions)) {
-            return $this->handleClosing($message, $chat);
+            // 'reopened' is a transient one-turn marker set by handle()'s re-entry guard.
+            // It signals that the user is genuinely continuing after a close, so we must
+            // NOT immediately re-close — allow the message to reach Step 2 classification.
+            if (($this->chatContext['chat_status'] ?? null) === 'reopened') {
+                $this->chatContext['chat_status'] = null; // consume the marker
+                // Fall through to Step 2 below
+            } else {
+                return $this->handleClosing($message, $chat);
+            }
         }
-        $prompt = <<<PROMPT
-        You are a helpful AI assistant for a business. Read the chat history to understand the context.
+
+        // ── Step 2: Classify the message ─────────────────────────────────────────────
+        // Primary context: structured state (activeService, services, pendingQuestions)
+        // Supporting context: recent chat only (last 6 messages — enough for tone/intent,
+        // not enough for irrelevant history to drive the decision)
+        $recentChat = array_slice($chat, -6);
+
+        $classifyPrompt = <<<PROMPT
+        You are a message classifier for a business chatbot. Classify the user's latest message into exactly ONE category.
 
         Business Niche: {$niche}
-        Business BIO: {$bio}
-        Available services: {$servicesText}
+        Available Services: {$servicesText}
         Current Active Service: {$activeService}
-        Service Attributes we can discuss: {$attributesText}
-        Already Collected Information: {$collectedDataText}
+        Pending Qualification Questions: {$pendingQuestions}
 
-        INSTRUCTIONS:
-        - If the user's message is a casual greeting (hello, hi) or out-of-context chit-chat, acknowledge it politely in 1 short sentence and immediately steer the conversation back to asking how you can help them with the active service.
-        - If the user's message is abusive, contains profanity, or is complete nonsense, politely but firmly tell them to keep it professional and ask how you can help them with the business.
-        - If the user simply states they want a service without asking a specific question: DO NOT ask multiple questions. Pick ONE question from this exact list of pending items: [{$pendingQuestions}] and ask it naturally. Do NOT invent your own questions.
-        - If the user asks a specific question about the business/service and the answer is not in your Business BIO, DO NOT guess or ask unrelated questions. Simply state that you don't have the exact details right now and politely ask for their phone number so the team can contact them with the information.
-        - Do not ask the user for information that is already listed in "Already Collected Information".
-        - ALWAYS respond in casual Hinglish. Use "tum", never "aap". No Devanagari.
-        - Do not act like a robot.
-        - Do not use markdown or lists. Keep it short (1-2 sentences).
+        Categories:
+        - "business": The user is asking a question, making a request, or seeking information related to the business niche, services, or attributes.
+        - "closing": The user is EXPLICITLY and UNAMBIGUOUSLY ending the conversation with a clear farewell signal (e.g., "bye", "goodbye", "band karo", "close karo", "ok bye").
+          ⚠️ IMPORTANT — Pending qualification questions still exist. Do NOT classify ambiguous acknowledgements ("alright", "ok", "thik hai", "haan", "theek hai", "sure") as "closing". These are "casual".
+        - "casual": Everything else — greetings, random/nonsense messages, off-topic chit-chat, and ALL ambiguous acknowledgements when pending questions remain.
+
+        Return ONLY valid JSON:
+        {
+            "type": "business" | "casual" | "closing"
+        }
         PROMPT;
 
-        $reply = $this->callLLM($prompt, $message, $chat, false, 0.7, 256);
+        $classification = $this->callLLM($classifyPrompt, $message, $recentChat, true, 0.1, 64);
+        $type = $classification['type'] ?? 'casual';
 
-        // API/Network failure hardcoded fallback
+        \Log::info('handleFallback classification', ['type' => $type, 'message' => $message]);
+
+        // ── Step 3: Route — never answer business questions ourselves ─────────────────
+        if ($type === 'business') {
+            return $this->handleUserRequestInfo($message, $chat);
+        }
+
+        if ($type === 'closing') {
+            return $this->handleClosing($message, $chat);
+        }
+
+        // ── "casual": short controlled response, steer back to business ──────────────
+        $casualPrompt = <<<PROMPT
+        You are a business chatbot assistant. The user sent a casual, off-topic, or ambiguous message.
+
+        Business Niche: {$niche}
+        Current Active Service: {$activeService}
+
+        Task:
+        - Acknowledge the user's message very briefly in 1 short sentence.
+        - Then naturally steer the conversation back toward the active service or pending business topic.
+        - Do NOT answer any business questions yourself.
+        - Do NOT give personal, emotional, or unrelated advice.
+        - Keep it to 1-2 sentences max.
+        - Use casual Hinglish. Use "tum", never "aap". No Devanagari.
+        PROMPT;
+
+        $reply = $this->callLLM($casualPrompt, $message, $recentChat, false, 0.7, 128);
+
         $fallbackReply = 'Bhai lagta hai thoda network issue tha, main theek se samajh nahi paya. Ek baar phir se bataoge tum kya dhoond rahe ho?';
 
         return [

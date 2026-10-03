@@ -33,6 +33,79 @@ class ChatEngineService
         $this->setState($context);
         $this->initializeLeadQualificationState();
 
+        // ── Re-entry guard: detect messages sent after the conversation was closed ────────
+        //
+        // chat_status = 'closing' is written into chatContext by handleClosing() and
+        // persists through context_state → frontend → next request → setState().
+        // When detected, we run one tiny LLM call to decide:
+        //   • Genuine continuation → set transient 'reopened' marker, fall through to pipeline.
+        //   • Mere acknowledgement  → return closing response immediately, skip pipeline.
+        // ────────────────────────────────────────────────────────────────────────────
+        if (($this->chatContext['chat_status'] ?? null) === 'closing') {
+            // Retrieve last AI message to give the LLM enough conversational context.
+            $lastAiMessage = '';
+            foreach (array_reverse($this->chatContext['infoHistory'] ?? []) as $msg) {
+                if (($msg['role'] ?? '') === 'assistant') {
+                    $lastAiMessage = $msg['content'] ?? '';
+                    break;
+                }
+            }
+
+            $reentryPrompt = <<<PROMPT
+            A chatbot just closed a conversation with a goodbye message. The user has sent a new message.
+
+            AI's closing message: "{$lastAiMessage}"
+            User's new message: "{$message}"
+
+            Determine: Is the user GENUINELY trying to continue or restart the conversation,
+            or are they merely acknowledging the goodbye?
+
+            - true  = genuine continuation: they have a question, request, new topic, or are
+                      signaling they want to keep talking (even if phrased casually or ambiguously).
+            - false = mere acknowledgement: a simple reaction to the goodbye with no intent
+                      to continue (e.g., "haan", "ok", "thik hai", "accha", "bye", "ok bye").
+
+            Return ONLY valid JSON:
+            {
+                "is_continuation": true | false
+            }
+            PROMPT;
+
+            $decision = $this->callLLM($reentryPrompt, '', [
+                ['role' => 'assistant', 'content' => $lastAiMessage],
+                ['role' => 'user',      'content' => $message],
+            ], true, 0.1, 64);
+
+            \Log::info('Re-entry guard', [
+                'is_continuation' => $decision['is_continuation'] ?? null,
+                'message'         => $message,
+            ]);
+
+            if (($decision['is_continuation'] ?? false) !== true) {
+                // Mere acknowledgement — stay closed, skip the pipeline entirely.
+                $this->chatContext['chat_status'] = 'closing';
+                return [
+                    'status' => true,
+                    'data'   => [
+                        'reply'         => 'Shukriya! Hamari team jald hi tumse contact karegi. 😊',
+                        'chat_status'   => 'closing',
+                        'intent'        => 'closingAcknowledgement',
+                        'context_state' => [
+                            'businessContext' => $this->businessContext,
+                            'chatContext'     => $this->chatContext,
+                        ],
+                    ],
+                    'code' => 200,
+                ];
+            }
+
+            // Genuine continuation — set transient marker and fall through to normal pipeline.
+            // handleFallback() Step 1 reads this marker to skip the immediate re-close.
+            // handle() clears it before serializing context_state so it never persists.
+            $this->chatContext['chat_status'] = 'reopened';
+        }
+        // ────────────────────────────────────────────────────────────────────────────
+
         // --------------------------
 
         $intentName = "Unknown";
@@ -98,6 +171,12 @@ class ChatEngineService
 
         if (isset($result['data'])) {
             $result['data']['intent'] = $intentName;
+            // Clean up the transient 'reopened' marker before serializing context_state.
+            // 'reopened' is an in-memory execution signal only — only 'closing' or null
+            // should ever survive into the persisted state the frontend stores.
+            if (($this->chatContext['chat_status'] ?? null) === 'reopened') {
+                $this->chatContext['chat_status'] = null;
+            }
             $result['data']['context_state'] = [
                 'businessContext' => $this->businessContext,
                 'chatContext' => $this->chatContext
