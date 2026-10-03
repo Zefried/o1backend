@@ -2,7 +2,9 @@
 
 namespace App\Services\Traits;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 trait ChatMethodHandler
 {
@@ -52,7 +54,7 @@ trait ChatMethodHandler
         PROMPT;
 
         $intentJson = $this->callLLM($prompt, $message, $chat, true, 0.1, 256);
-        \Log::info("checkIntent Output: ", $intentJson);
+        Log::info("checkIntent Output: ", $intentJson);
         return $intentJson;
     }
 
@@ -205,7 +207,7 @@ trait ChatMethodHandler
                 $rawContent = $response->json('choices.0.message.content', $jsonFormat ? '{}' : '');
                 break; // Stop loop, we got a successful response
             } else {
-                \Log::warning("LLM API Error with model {$model}: " . $response->body());
+                Log::warning("LLM API Error with model {$model}: " . $response->body());
                 // Will automatically continue loop to try the next model
             }
         }
@@ -333,7 +335,7 @@ trait ChatMethodHandler
         $classification = $this->callLLM($classifyPrompt, $message, $recentChat, true, 0.1, 64);
         $type = $classification['type'] ?? 'casual';
 
-        \Log::info('handleFallback classification', ['type' => $type, 'message' => $message]);
+        Log::info('handleFallback classification', ['type' => $type, 'message' => $message]);
 
         // ── Step 3: Route — never answer business questions ourselves ─────────────────
         if ($type === 'business') {
@@ -409,7 +411,7 @@ trait ChatMethodHandler
         // 2. Fetch ONLY attributes that have actual DB data for this service (ground truth)
         $availableAttributes = [];
         if ($businessId) {
-            $availableAttributes = \DB::table('ai_contexts')
+            $availableAttributes = DB::table('ai_contexts')
                 ->where('business_id', $businessId)
                 ->where('service_name', $activeService)
                 ->pluck('attribute_definition')
@@ -506,7 +508,7 @@ trait ChatMethodHandler
         }
 
         // 6. Attribute found AND has DB data — fetch context and answer
-        $information = \DB::table('ai_contexts')
+        $information = DB::table('ai_contexts')
             ->where('business_id', $businessId)
             ->where('service_name', $activeService)
             ->where('attribute_definition', $attribute)
