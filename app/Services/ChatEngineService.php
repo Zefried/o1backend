@@ -148,6 +148,9 @@ class ChatEngineService
             if (($intent['ResponseToQualification'] ?? false) === true) {
                 $intentName = "ResponseToQualification";
                 $result = $this->handleQualificationReply($message, $this->chatContext['infoHistory'] ?? []);
+            } elseif (($intent['pricingIntent'] ?? false) === true) {
+                $intentName = "pricingIntent";
+                $result = $this->handlePricingRequest($message, $this->chatContext['infoHistory'] ?? []);
             } elseif (($intent['userRequestInfo'] ?? false) === true || ($intent['topicChange'] ?? false) === true) {
                 $intentName = "userRequestInfo";
                 $result = $this->handleUserRequestInfo($message, $this->chatContext['infoHistory'] ?? [], $intent);
