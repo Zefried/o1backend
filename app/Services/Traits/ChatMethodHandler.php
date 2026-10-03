@@ -386,15 +386,7 @@ trait ChatMethodHandler
 
         // 1. If no active service, ask the user to pick one
         if (!$activeService) {
-            $servicesText = empty($services) ? 'None' : implode(', ', $services);
-            $prompt = <<<PROMPT
-            The user is asking a question but we don't know which service they want.
-            Available services: {$servicesText}
-            Ask them politely in casual Hinglish which service they need help with.
-            Do NOT list all services. Use "tum", never "aap". No Devanagari.
-            PROMPT;
-            $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 128);
-            return ['status' => true, 'data' => ['reply' => $reply]];
+            return $this->askUserToPickService($message, $chat, $services);
         }
 
         // Handle topic change — user switched to a new service
@@ -409,6 +401,44 @@ trait ChatMethodHandler
         }
 
         // 2. Fetch ONLY attributes that have actual DB data for this service (ground truth)
+        $availableAttributes = $this->fetchAvailableAttributes($businessId, $activeService);
+
+        // 3. Single LLM call: identify attribute AND whether we have data for it
+        $identification = $this->identifyRequestedAttribute($message, $chat, $attributes, $availableAttributes, $activeService);
+        $attribute      = $identification['asked_attribute'] ?? null;
+        $hasData        = $identification['has_data'] ?? false;
+
+        // 4. No clear attribute → General Knowledge / BIO fallback
+        if (!$attribute || !in_array($attribute, $attributes)) {
+            return $this->generateGeneralFallbackReply($message, $availableAttributes, $niche, $bio);
+        }
+
+        // 5. Attribute identified but NO DATA in DB
+        if (!$hasData) {
+            return $this->generateNoDataReply($attribute, $activeService, $availableAttributes, $bio);
+        }
+
+        // 6. Attribute found AND has DB data — fetch context and answer
+        return $this->generateAttributeAnswer($message, $chat, $attribute, $activeService, $businessId, $bio);
+    }
+
+    // ── handleUserRequestInfo private helpers ─────────────────────────────────
+
+    private function askUserToPickService(string $message, array $chat, array $services): array
+    {
+        $servicesText = empty($services) ? 'None' : implode(', ', $services);
+        $prompt = <<<PROMPT
+        The user is asking a question but we don't know which service they want.
+        Available services: {$servicesText}
+        Ask them politely in casual Hinglish which service they need help with.
+        Do NOT list all services. Use "tum", never "aap". No Devanagari.
+        PROMPT;
+        $reply = $this->callLLM($prompt, $message, $chat, false, 1.0, 128);
+        return ['status' => true, 'data' => ['reply' => $reply]];
+    }
+
+    private function fetchAvailableAttributes(?string $businessId, ?string $activeService): array
+    {
         $availableAttributes = [];
         if ($businessId) {
             $availableAttributes = DB::table('ai_contexts')
@@ -417,8 +447,11 @@ trait ChatMethodHandler
                 ->pluck('attribute_definition')
                 ->toArray();
         }
+        return $availableAttributes;
+    }
 
-        // 3. Single LLM call: identify attribute AND whether we have data for it
+    private function identifyRequestedAttribute(string $message, array $chat, array $attributes, array $availableAttributes, string $activeService): array
+    {
         $attributesJson  = json_encode($attributes);
         $availableJson   = json_encode($availableAttributes);
 
@@ -440,17 +473,16 @@ trait ChatMethodHandler
         }
         PROMPT;
 
-        $identification = $this->callLLM($identPrompt, $message, $chat, true, 0.1, 128);
-        $attribute      = $identification['asked_attribute'] ?? null;
-        $hasData        = $identification['has_data'] ?? false;
+        return $this->callLLM($identPrompt, $message, $chat, true, 0.1, 128);
+    }
 
-        // 4. No clear attribute → General Knowledge / BIO fallback
-        if (!$attribute || !in_array($attribute, $attributes)) {
-            $availableText = empty($availableAttributes)
-                ? 'abhi koi bhi topic'
-                : implode(', ', $availableAttributes);
+    private function generateGeneralFallbackReply(string $message, array $availableAttributes, string $niche, string $bio): array
+    {
+        $availableText = empty($availableAttributes)
+            ? 'abhi koi bhi topic'
+            : implode(', ', $availableAttributes);
 
-                $generalPrompt = <<<PROMPT
+            $generalPrompt = <<<PROMPT
                 You are a business chatbot assistant handling a user's business-related question that could not be mapped to a known business attribute.
 
                 Business Niche:
@@ -480,33 +512,35 @@ trait ChatMethodHandler
                 Return ONLY the final user-facing response.
             PROMPT;
 
-                $reply = $this->callLLM($generalPrompt, $message, [], false, 0.7, 256);
-            return ['status' => true, 'data' => ['reply' => $reply]];
-        }
+            $reply = $this->callLLM($generalPrompt, $message, [], false, 0.7, 256);
+        return ['status' => true, 'data' => ['reply' => $reply]];
+    }
 
-        // 5. Attribute identified but NO DATA in DB
-        if (!$hasData) {
-            $availableText = empty($availableAttributes)
-                ? 'abhi koi bhi topic'
-                : implode(', ', $availableAttributes);
+    private function generateNoDataReply(string $attribute, string $activeService, array $availableAttributes, string $bio): array
+    {
+        $availableText = empty($availableAttributes)
+            ? 'abhi koi bhi topic'
+            : implode(', ', $availableAttributes);
 
-            $noDataPrompt = <<<PROMPT
-            The user asked about: {$attribute} for {$activeService}.
-            We do NOT have this specific information in our system right now.
-            We DO have data for these topics: {$availableText}.
-            Business BIO: {$bio}
+        $noDataPrompt = <<<PROMPT
+        The user asked about: {$attribute} for {$activeService}.
+        We do NOT have this specific information in our system right now.
+        We DO have data for these topics: {$availableText}.
+        Business BIO: {$bio}
 
-            Generate a short, honest, helpful response in casual Hinglish that:
-            1. Clearly says in ONE sentence we don't have "{$attribute}" details right now.
-            2. Naturally offers to help with 1-2 things we DO have (from the available list).
-            3. Do NOT say "database", "context", or "AI". Sound natural.
-            4. Use "tum", never "aap". No Devanagari. Keep it to 2 sentences max.
-            PROMPT;
+        Generate a short, honest, helpful response in casual Hinglish that:
+        1. Clearly says in ONE sentence we don't have "{$attribute}" details right now.
+        2. Naturally offers to help with 1-2 things we DO have (from the available list).
+        3. Do NOT say "database", "context", or "AI". Sound natural.
+        4. Use "tum", never "aap". No Devanagari. Keep it to 2 sentences max.
+        PROMPT;
 
-            $reply = $this->callLLM($noDataPrompt, '', [], false, 0.7, 256);
-            return ['status' => true, 'data' => ['reply' => $reply]];
-        }
+        $reply = $this->callLLM($noDataPrompt, '', [], false, 0.7, 256);
+        return ['status' => true, 'data' => ['reply' => $reply]];
+    }
 
+    private function generateAttributeAnswer(string $message, array $chat, string $attribute, string $activeService, ?string $businessId, string $bio): array
+    {
         // 6. Attribute found AND has DB data — fetch context and answer
         $information = DB::table('ai_contexts')
             ->where('business_id', $businessId)
