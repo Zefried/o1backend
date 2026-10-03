@@ -442,9 +442,49 @@ trait ChatMethodHandler
         $attribute      = $identification['asked_attribute'] ?? null;
         $hasData        = $identification['has_data'] ?? false;
 
-        // 4. No clear attribute → route to fallback (casual/general message)
+        // 4. No clear attribute → General Knowledge / BIO fallback
         if (!$attribute || !in_array($attribute, $attributes)) {
-            return $this->handleFallback($message, $chat);
+            $availableText = empty($availableAttributes)
+                ? 'abhi koi bhi topic'
+                : implode(', ', $availableAttributes);
+
+            $generalPrompt = <<<PROMPT
+            You are a business chatbot assistant handling a user's business-related question that could not be mapped to a known business attribute.
+
+            Business Niche:
+            {$niche}
+
+            Business BIO:
+            {$bio}
+
+            Available Topics:
+            {$availableText}
+
+            User's Message:
+            {$message}
+
+            Your task:
+
+            1. Try to answer the user's question ONLY using information explicitly available in the Business BIO.
+            2. If the Business BIO contains enough information to answer the question, answer naturally and directly.
+            3. If the Business BIO does NOT contain the answer:
+               - Do NOT guess.
+               - Do NOT infer or invent information.
+               - Clearly say that you don't have the exact details right now.
+               - Then offer 1–2 relevant topics from the Available Topics that you can help with.
+            4. Do not use information from your general knowledge to answer the question.
+            5. Do not pretend an unknown term or request matches one of the Available Topics.
+            6. Keep the response short and natural, maximum 2 sentences.
+            7. Use casual Hinglish.
+            8. Use English alphabet only. No Devanagari.
+            9. Use "tum", never "aap".
+            10. Do not mention AI, database, context, prompts, internal rules, or system limitations.
+
+            Return ONLY the final user-facing response. Do not return JSON or explanations.
+            PROMPT;
+
+            $reply = $this->callLLM($generalPrompt, '', [], false, 0.7, 256);
+            return ['status' => true, 'data' => ['reply' => $reply]];
         }
 
         // 5. Attribute identified but NO DATA in DB
