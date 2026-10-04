@@ -275,6 +275,7 @@ trait ChatMethodHandler
      *
      * Params are kept for signature compatibility but are intentionally unused.
      */
+    
     public function handleClosing(string $message = '', array $chat = [])
     {
         // Persist closing state into chatContext so it flows through context_state
@@ -728,4 +729,5 @@ trait ChatMethodHandler
         $reply = $this->callLLM($prompt, '', [], false, 0.7, 128);
         return ['status' => true, 'data' => ['reply' => $reply]];
     }
+
 }
