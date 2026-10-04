@@ -513,6 +513,8 @@ trait ChatMethodHandler
         RULES:
         - DO NOT invent or assume any missing numbers.
         - DO NOT mention the AI, database, or internal calculation logic to the user.
+        - STRICT MATH RULE FOR 'min_price' (Minimum Price): A minimum price is purely a billing floor. It is NOT a base setup fee and must NEVER be subtracted or deducted from a user's budget.
+        - For 'Budget-fit' calculations: Simply divide their Total Budget by the Per-Unit cost to find the affordable units. Then, check if the calculated Total Cost meets or exceeds the 'min_price'. If their total budget is below the 'min_price', politely inform them of the minimum billing requirement instead of calculating negative/reduced budgets.
         PROMPT;
 
         $reply = $this->callLLM($prompt, $message, $chat, false, 0.2, 512);
