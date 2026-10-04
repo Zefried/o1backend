@@ -82,6 +82,7 @@ Classify message
      ↓
 FRONTEND / USER
 
+///////////////////////////////////////////////////////////
 User Message
      ↓
 Understand intent
@@ -93,3 +94,58 @@ Handler gets the right context/data
 LLM generates response
      ↓
 User
+
+////////////////////////////////////////////////////////// UserRequestInfo() flow 
+
+USER MESSAGE
+     ↓
+handleUserRequestInfo()
+     ↓
+Is Active Service available?
+     │
+     ├── NO
+     │    ↓
+     │  Ask user to select a service
+     │
+     └── YES
+          ↓
+   Check for Topic Change
+          │
+          ├── YES → Generate qualification query
+          │
+          └── NO
+               ↓
+     Fetch Available Attributes
+     (only attributes having DB data)
+               ↓
+     Identify Requested Attribute
+               ↓
+       ┌───────────────────┐
+       │ Attribute found?  │
+       └───────────────────┘
+          ↓ YES       ↓ NO
+          │           │
+          │      General/BIO
+          │        fallback
+          ↓
+   Has DB data for
+   requested attribute?
+          │
+      ┌───┴────┐
+     YES       NO
+      ↓         ↓
+Fetch exact    No-data
+context        response
+      ↓
+Attribute Answer LLM
+      ↓
+   FINAL RESPONSE
+
+Message
+ → Active Service
+ → Topic Change?
+ → Identify Attribute
+ → Check DB Availability
+ → Fetch Context
+ → Generate Answer
+ → Response
