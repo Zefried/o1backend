@@ -36,7 +36,8 @@ trait ChatMethodHandler
 
         Determine the primary intent of the latest message. 
         Return ONLY valid JSON with ONE OR MORE of these keys set to true:
-        - "userRequestInfo": (boolean) User is asking a question, making a request, or requesting information related to the business's niche, services, or attributes.
+        - "userRequestInfo": (boolean) User is asking a general question, making a request, or requesting information related to the business's niche, services, or attributes (excluding specific pricing questions).
+        - "pricingIntent": (boolean) Set to true if the user's message is specifically asking about prices, costs, budget, estimates, discounts, or any financial figures.
         - "userProvidedInfo": (boolean) Set to true if the user's message contains personal information, preferences, budget, timeline, phone number, location, etc. that could answer a business qualification question.
         {$qualQueryPrompt}
 
@@ -46,6 +47,7 @@ trait ChatMethodHandler
         JSON:
         {
             "userRequestInfo": boolean,
+            "pricingIntent": boolean,
             "userProvidedInfo": boolean,
             "ResponseToQualification": boolean,
             "topicChange": boolean,
@@ -422,6 +424,68 @@ trait ChatMethodHandler
         return $this->generateAttributeAnswer($message, $chat, $attribute, $activeService, $businessId, $bio);
     }
 
+    public function handlePricingRequest(string $message, array $chat = []): array
+    {
+        $businessId    = $this->businessId ?? null;
+        $activeService = $this->businessContext['backendData']['UserServiceDemand'] ?? null;
+        $services      = $this->businessContext['backendData']['services'] ?? [];
+        $bio           = $this->businessContext['backendData']['bio'] ?? '';
+
+        if (!$activeService) {
+            return $this->askUserToPickService($message, $chat, $services);
+        }
+
+        // Fetch ALL ai_contexts for this service to get comprehensive pricing/rules
+        $allContexts = [];
+        if ($businessId) {
+            $allContexts = DB::table('ai_contexts')
+                ->where('business_id', $businessId)
+                ->where('service_name', $activeService)
+                ->get();
+        }
+
+        if (empty($allContexts) || $allContexts->isEmpty()) {
+            return $this->generateNoDataReply("pricing", $activeService, [], $bio);
+        }
+
+        // Aggregate contexts
+        $aggregatedContext = "";
+        foreach ($allContexts as $contextRow) {
+            $aggregatedContext .= "Attribute: {$contextRow->attribute_definition}\n";
+            $aggregatedContext .= "Context/Data: {$contextRow->context}\n";
+            $aggregatedContext .= "Rules/Instructions: {$contextRow->prompt}\n\n";
+        }
+
+        $collectedData     = $this->chatContext['leadQualificationState'][$activeService]['data'] ?? [];
+        $collectedDataText = empty($collectedData) ? 'None' : json_encode($collectedData);
+
+        // Build the Prompt
+        $prompt = <<<PROMPT
+        You are an advanced Pricing and Estimation engine for a business.
+        Service: {$activeService}
+        Business BIO: {$bio}
+        Already Collected Information about User: {$collectedDataText}
+
+        Available Knowledge Base (Rules, Constraints, Base Prices, Formulas):
+        {$aggregatedContext}
+
+        Task: The user has asked a pricing, cost, estimate, or budget-related question.
+        1. Identify the requested calculation type (e.g., Per-unit, Total, Budget-fit, Maximum, Minimum, Range, Comparison, Change, Discount, Negotiation, Estimate, Rule, or Reverse).
+        2. Extract necessary variables from the user's message and 'Already Collected Information'.
+        3. Use the 'Available Knowledge Base' EXACTLY as provided to perform mathematical calculations. NEVER invent prices, units, currencies, limits, or formulas not explicitly defined in the context.
+        4. Use conversation history ONLY to recover missing pricing-related values (like dimensions or quantities) that the user provided earlier. Ignore unrelated chat history.
+        5. If a critical value required to complete the mathematical formula is still missing, formulate EXACTLY ONE short clarification question asking for that specific missing value. NEVER ask a general qualification question (like name, location, etc., unless mathematically required for pricing).
+        6. If all required information exists, perform the calculation, answer the user briefly with the result, and stop. Keep the final response short and in casual Hinglish (use "tum", never "aap", no Devanagari).
+
+        RULES:
+        - DO NOT invent or assume any missing numbers.
+        - DO NOT mention the AI, database, or internal calculation logic to the user.
+        PROMPT;
+
+        $reply = $this->callLLM($prompt, $message, $chat, false, 0.2, 512);
+        return ['status' => true, 'data' => ['reply' => $reply]];
+    }
+
     // ── handleUserRequestInfo private helpers ─────────────────────────────────
 
     private function askUserToPickService(string $message, array $chat, array $services): array
@@ -601,4 +665,3 @@ trait ChatMethodHandler
         return ['status' => true, 'data' => ['reply' => $reply]];
     }
 }
-
