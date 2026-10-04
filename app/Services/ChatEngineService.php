@@ -61,7 +61,7 @@ class ChatEngineService
             or are they merely acknowledging the goodbye?
 
             - true  = genuine continuation: they have a question, request, new topic, or are
-                      signaling they want to keep talking (even if phrased casually or ambiguously).
+                      signaling they want to keep talking (even if phrased casually or ambiguously). ALSO set to true if the message is a single word, short phrase, or likely typo (e.g. "porfolio", "prfo").
             - false = mere acknowledgement: a simple reaction to the goodbye with no intent
                       to continue (e.g., "haan", "ok", "thik hai", "accha", "bye", "ok bye").
 
