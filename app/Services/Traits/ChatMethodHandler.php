@@ -25,6 +25,11 @@ trait ChatMethodHandler
             $qualQueryPrompt = "- \"ResponseToQualification\": (boolean) Always set to false.";
         }
 
+        $pendingClarification = $this->chatContext['pending_attribute_clarification'] ?? null;
+        $clarificationPrompt = $pendingClarification
+            ? "\n        CRITICAL: The user was just asked if they meant '{$pendingClarification}'. If their message is a simple 'yes', 'no', or a correction to this, you MUST set \"userRequestInfo\" to true."
+            : "";
+
         $prompt = <<<PROMPT
         Analyze the user's latest message based on the conversation history and business context.
         
@@ -36,7 +41,7 @@ trait ChatMethodHandler
 
         Determine the primary intent of the latest message. 
         Return ONLY valid JSON with ONE OR MORE of these keys set to true:
-        - "userRequestInfo": (boolean) User is asking a general question, making a request, or requesting information related to the business's niche, services, or attributes (excluding specific pricing questions).
+        - "userRequestInfo": (boolean) User is asking a general question, making a request, or requesting information related to the business's niche, services, or attributes (excluding specific pricing questions).{$clarificationPrompt}
         - "pricingIntent": (boolean) Set to true if the user's message is specifically asking about prices, costs, budget, estimates, discounts, or any financial figures.
         - "userProvidedInfo": (boolean) Set to true if the user's message contains personal information, preferences, budget, timeline, phone number, location, etc. that could answer a business qualification question.
         {$qualQueryPrompt}
@@ -402,6 +407,26 @@ trait ChatMethodHandler
             }
         }
 
+        // 1. Resolve pending clarification if exists
+        $pendingAttribute = $this->chatContext['pending_attribute_clarification'] ?? null;
+        if ($pendingAttribute) {
+            $resolution = $this->resolveClarificationConfirmation($message, $pendingAttribute);
+            
+            if ($resolution['confirmed'] ?? false) {
+                unset($this->chatContext['pending_attribute_clarification']);
+                $attribute = $pendingAttribute;
+                $availableAttributes = $this->fetchAvailableAttributes($businessId, $activeService);
+                $hasData = in_array($attribute, $availableAttributes);
+                
+                if (!$hasData) {
+                    return $this->generateNoDataReply($attribute, $activeService, $availableAttributes, $bio);
+                }
+                return $this->generateAttributeAnswer($message, $chat, $attribute, $activeService, $businessId, $bio);
+            }
+            // If not confirmed (e.g. 'no' or different topic), clear it and fall through to standard processing
+            unset($this->chatContext['pending_attribute_clarification']);
+        }
+
         // 2. Fetch ONLY attributes that have actual DB data for this service (ground truth)
         $availableAttributes = $this->fetchAvailableAttributes($businessId, $activeService);
 
@@ -409,6 +434,13 @@ trait ChatMethodHandler
         $identification = $this->identifyRequestedAttribute($message, $chat, $attributes, $availableAttributes, $activeService);
         $attribute      = $identification['asked_attribute'] ?? null;
         $hasData        = $identification['has_data'] ?? false;
+        $ambiguous      = $identification['ambiguous_attribute'] ?? null;
+
+        // NEW: Clarification check
+        if (!$attribute && $ambiguous) {
+            $this->chatContext['pending_attribute_clarification'] = $ambiguous;
+            return $this->generateClarificationReply($ambiguous);
+        }
 
         // 4. No clear attribute → General Knowledge / BIO fallback
         if (!$attribute || !in_array($attribute, $attributes)) {
@@ -529,11 +561,13 @@ trait ChatMethodHandler
         Task:
         1. "asked_attribute": Which attribute from "All business attributes" is the user asking about? Use chat history for context. Return null if not asking about any specific attribute (e.g., casual chat, greetings).
         2. "has_data": Is "asked_attribute" present in "Attributes we ACTUALLY have database data for"? true/false.
+        3. "ambiguous_attribute": If "asked_attribute" is null because the user's message contains a typo (e.g. "porfolio"), is too short, or is ambiguous BUT likely refers to a specific attribute from the list, put the guessed attribute name here. Otherwise, null.
 
         Return ONLY valid JSON:
         {
             "asked_attribute": string | null,
-            "has_data": boolean
+            "has_data": boolean,
+            "ambiguous_attribute": string | null
         }
         PROMPT;
 
@@ -662,6 +696,36 @@ trait ChatMethodHandler
         PROMPT;
 
         $reply = $this->callLLM($answerPrompt, $message, $chat, false, 0.7, 512);
+        return ['status' => true, 'data' => ['reply' => $reply]];
+    }
+
+    private function resolveClarificationConfirmation(string $message, string $pendingAttribute): array
+    {
+        $prompt = <<<PROMPT
+        The user was previously asked to clarify if they meant "{$pendingAttribute}".
+        Their response is: "{$message}"
+
+        Did the user confirm they are asking about "{$pendingAttribute}"?
+        (If they say yes, yup, haan, true - return true. If they say no, nay, nah, or ask a completely different question - return false.)
+
+        Return ONLY valid JSON:
+        {
+            "confirmed": boolean
+        }
+        PROMPT;
+
+        return $this->callLLM($prompt, '', [], true, 0.1, 64);
+    }
+
+    private function generateClarificationReply(string $ambiguousAttribute): array
+    {
+        $prompt = <<<PROMPT
+        Generate a very short, polite question in casual Hinglish asking the user if they meant "{$ambiguousAttribute}".
+        Keep it to one single short sentence. Use "tum", never "aap". No Devanagari.
+        Example format: "Tum {$ambiguousAttribute} ke baare mein puch rahe ho kya?"
+        PROMPT;
+
+        $reply = $this->callLLM($prompt, '', [], false, 0.7, 128);
         return ['status' => true, 'data' => ['reply' => $reply]];
     }
 }
