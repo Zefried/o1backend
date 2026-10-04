@@ -5,10 +5,11 @@ namespace App\Services;
 use Illuminate\Support\Facades\Http;
 use App\Services\Traits\ChatMethodHandler;
 use App\Services\Traits\LeadQualificationTraits;
+use App\Services\Traits\CredibilityTrait;
 
 class ChatEngineService
 {
-    use ChatMethodHandler, LeadQualificationTraits;
+    use ChatMethodHandler, LeadQualificationTraits, CredibilityTrait;
 
     private ?string $businessId = null;
 
@@ -151,6 +152,9 @@ class ChatEngineService
             } elseif (($intent['pricingIntent'] ?? false) === true) {
                 $intentName = "pricingIntent";
                 $result = $this->handlePricingRequest($message, $this->chatContext['infoHistory'] ?? []);
+            } elseif (($intent['credibilityIntent'] ?? false) === true) {
+                $intentName = "credibilityIntent";
+                $result = $this->handleCredibilityRequest($message, $this->chatContext['infoHistory'] ?? []);
             } elseif (($intent['userRequestInfo'] ?? false) === true || ($intent['topicChange'] ?? false) === true) {
                 $intentName = "userRequestInfo";
                 $result = $this->handleUserRequestInfo($message, $this->chatContext['infoHistory'] ?? [], $intent);
@@ -174,6 +178,11 @@ class ChatEngineService
 
         if (isset($result['data'])) {
             $result['data']['intent'] = $intentName;
+
+            if (isset($this->chatContext['debug_model'])) {
+                $result['debug_model'] = $this->chatContext['debug_model'];
+                unset($this->chatContext['debug_model']);
+            }
             // Clean up the transient 'reopened' marker before serializing context_state.
             // 'reopened' is an in-memory execution signal only — only 'closing' or null
             // should ever survive into the persisted state the frontend stores.

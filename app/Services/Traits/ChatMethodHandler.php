@@ -43,6 +43,7 @@ trait ChatMethodHandler
         Return ONLY valid JSON with ONE OR MORE of these keys set to true:
         - "userRequestInfo": (boolean) User is asking a general question, making a request, or requesting information related to the business's niche, services, or attributes (excluding specific pricing questions). ALSO set to true if the message is a single word, short phrase, or likely typo (e.g. "porfolio", "prfo") that might be attempting to ask about a business topic.{$clarificationPrompt}
         - "pricingIntent": (boolean) Set to true if the user's message is specifically asking about prices, costs, budget, estimates, discounts, or any financial figures.
+        - "credibilityIntent": (boolean) Set to true if the user is asking about the business's credibility, experience, portfolio, past projects, clients, team expertise, certifications, achievements, testimonials, reviews, about the business, work quality, or why they should trust or choose the business, or something very similar.
         - "userProvidedInfo": (boolean) Set to true if the user's message contains personal information, preferences, budget, timeline, phone number, location, etc. that could answer a business qualification question.
         {$qualQueryPrompt}
 
@@ -53,6 +54,7 @@ trait ChatMethodHandler
         {
             "userRequestInfo": boolean,
             "pricingIntent": boolean,
+            "credibilityIntent": boolean,
             "userProvidedInfo": boolean,
             "ResponseToQualification": boolean,
             "topicChange": boolean,
@@ -211,6 +213,7 @@ trait ChatMethodHandler
             ->post('https://api.groq.com/openai/v1/chat/completions', $payload);
 
             if ($response->successful()) {
+                $this->chatContext['debug_model'] = $model;
                 $rawContent = $response->json('choices.0.message.content', $jsonFormat ? '{}' : '');
                 break; // Stop loop, we got a successful response
             } else {
