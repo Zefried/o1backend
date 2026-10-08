@@ -29,6 +29,13 @@ class ChatEngineService
         'infoHistory' => []
     ];
 
+    public function getBusinessContext(array $context): array
+    {
+        $this->businessId = $context['business_id'] ?? null;
+        $this->loadBusinessContextFromDB($context);
+        return $this->businessContext;
+    }
+
     public function handle(string $message, array $chat = [], array $context = [])
     {
         $this->setState($context);
@@ -339,84 +346,5 @@ class ChatEngineService
         }
     }
 
-    /**
-     * Independent background extraction method.
-     * Called from frontend after shadow question is answered.
-     * Scans full infoHistory and extracts any answers to pending qualification questions.
-     */
-    public function extractLeadDataFromHistory(array $infoHistory, array $chatContext, array $businessContext): array
-    {
-        $this->chatContext    = $chatContext;
-        $this->businessContext = $businessContext;
 
-        $demandService = $businessContext['backendData']['UserServiceDemand'] ?? null;
-        if (!$demandService || $demandService === 'None') {
-            return $chatContext['leadQualificationState'] ?? [];
-        }
-
-        $leadState = $chatContext['leadQualificationState'] ?? [];
-        $globalQuestions  = $leadState['Global']['questions'] ?? '';
-        $serviceQuestions = $leadState[$demandService]['questions'] ?? '';
-
-        $allQuestionsList = [];
-        if (!empty($globalQuestions))  $allQuestionsList[] = $globalQuestions;
-        if (!empty($serviceQuestions)) $allQuestionsList[] = $serviceQuestions;
-        $allQuestions = implode(', ', $allQuestionsList);
-
-        if (empty($allQuestions)) {
-            return $chatContext['leadQualificationState'] ?? [];
-        }
-
-        $historyText = '';
-        foreach ($infoHistory as $msg) {
-            $role = $msg['role'] === 'user' ? 'User' : 'AI';
-            $historyText .= "{$role}: " . $msg['content'] . "\n";
-        }
-
-        $prompt = <<<PROMPT
-        You are a data extraction assistant. Read the full chat history and extract answers to the pending qualification questions.
-
-        Pending Questions (field=priority): {$allQuestions}
-
-        Chat History:
-        {$historyText}
-
-        Task:
-        1. Go through the chat history carefully.
-        2. For each pending question field, check if the user has explicitly provided an answer at any point.
-        3. DO NOT extract or return fields that haven't been discussed yet.
-        4. ONLY if the user was asked about a field and they explicitly said they don't know, haven't decided, or denied/skipped — treat that as "Not decided yet" for that specific field.
-        5. Only extract fields that are in the Pending Questions list.
-
-        Return ONLY valid JSON:
-        {
-            "extractions": [
-                {"field": "Budget", "value": "80k"}
-            ]
-        }
-        If nothing found, return: {"extractions": []}
-        PROMPT;
-
-        $response = $this->callLLM($prompt, '', [], true, 0.1, 512);
-        $extractions = $response['extractions'] ?? [];
-
-        foreach ($extractions as $item) {
-            if (!isset($item['field']) || !isset($item['value'])) continue;
-
-            $field = $item['field'];
-            $value = $item['value'];
-
-            if (str_contains($globalQuestions, $field)) {
-                $this->chatContext['leadQualificationState']['Global']['data'][] = [$field => $value];
-                $this->chatContext['leadQualificationState']['Global']['questions'] =
-                    trim(preg_replace('/' . preg_quote($field, '/') . '=\d+(,\s*)?/', '', $this->chatContext['leadQualificationState']['Global']['questions']), ', ');
-            } elseif (isset($this->chatContext['leadQualificationState'][$demandService])) {
-                $this->chatContext['leadQualificationState'][$demandService]['data'][] = [$field => $value];
-                $this->chatContext['leadQualificationState'][$demandService]['questions'] =
-                    trim(preg_replace('/' . preg_quote($field, '/') . '=\d+(,\s*)?/', '', $this->chatContext['leadQualificationState'][$demandService]['questions']), ', ');
-            }
-        }
-
-        return $this->chatContext['leadQualificationState'];
-    }
 }

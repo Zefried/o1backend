@@ -60,54 +60,27 @@ class ChatController extends Controller
 
         return response()->json($result, $result['code'] ?? 200);
     }
-    public function publicEyeOnResponses(Request $request)
+
+    /** POST /api/public/chat/init */
+    public function publicChatInit(Request $request)
     {
         $request->validate([
-            'userMessage' => 'required|string',
-            'aiReply' => 'required|string',
-            'chatContext' => 'nullable|array',
+            'businessId' => 'required|string',
+            'token'      => 'nullable|string',
         ]);
 
-        $userMessage = $request->input('userMessage');
-        $aiReply = $request->input('aiReply');
-        $chatContext = $request->input('chatContext', []);
-
-        $result = [
-            'data' => [
-                'reply' => $aiReply
-            ]
+        $businessId = $request->input('businessId');
+        
+        $context = [
+            'business_id' => $businessId
         ];
 
-        // Call the decoupled rough engine
-        $finalResult = $this->chatEngine->eyeOnResponses($result, $userMessage, $chatContext);
+        $businessContext = $this->chatEngine->getBusinessContext($context);
 
         return response()->json([
             'status' => true,
-            'data' => $finalResult['data']['eye_monitor'] ?? null
+            'data'   => $businessContext
         ]);
     }
 
-    public function extractLeadData(Request $request)
-    {
-        $request->validate([
-            'infoHistory' => 'required|array',
-            'chatContext'  => 'required|array',
-            'businessContext' => 'required|array',
-        ]);
-
-        $infoHistory    = $request->input('infoHistory', []);
-        $chatContext    = $request->input('chatContext', []);
-        $businessContext = $request->input('businessContext', []);
-
-        $updatedState = $this->chatEngine->extractLeadDataFromHistory(
-            $infoHistory,
-            $chatContext,
-            $businessContext
-        );
-
-        return response()->json([
-            'status' => true,
-            'data'   => ['leadQualificationState' => $updatedState]
-        ]);
-    }
 }
